@@ -20,8 +20,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/scttfrdmn/apprise-go/apprise"
 )
 
 // Config defines the plugin configuration.
@@ -33,7 +31,6 @@ type Config struct {
 	ExpirationTime             int      `json:"expirationTime,omitempty"` // Whitelist duration in seconds
 	SecretKey                  string   `json:"secretKey,omitempty"`
 	NotificationURL            string   `json:"notificationURL,omitempty"`
-	AppriseConfig              string   `json:"appriseConfig,omitempty"`
 	KnockEndpoint              string   `json:"knockEndpoint,omitempty"`
 	ApprovalURL                string   `json:"approvalURL,omitempty"`
 
@@ -90,7 +87,6 @@ type IPWhitelistShaper struct {
 	lastRequestedIP    map[string]time.Time // Map IP -> Time of last knock request
 	sourceRangeChecker *sourceRangeChecker
 	mutex              sync.RWMutex // Protects maps: whitelistedIPs, pendingApprovals, lastRequestedIP
-	appriseApp         *apprise.Apprise
 	wordList           []string
 	ctx                context.Context
 	cancel             context.CancelFunc // To stop background tasks
@@ -133,18 +129,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		"xylophone", "yellow", "zebra", "airplane", "beach", "computer", "dolphin",
 	}
 
-	var appriseApp *apprise.Apprise
-	if (config.AppriseConfig != "") {
-	    app := apprise.New()
-		appConfig := apprise.NewConfigLoader(app)
-		err := appConfig.AddFromFile(config.AppriseConfig)
-		if err != nil {
-			fmt.Printf("[%s] WARNING: Could not load apprise config from %s: %v\n", name, config.AppriseConfig, err)
-		} else {
-			appConfig.ApplyToApprise()
-			appriseApp = app
-		}
-	}
 	// Create context with cancellation for background tasks
 	pluginCtx, cancel := context.WithCancel(ctx)
 
@@ -157,7 +141,6 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 		lastRequestedIP:    make(map[string]time.Time),
 		sourceRangeChecker: checker,
 		wordList:           wordList,
-		appriseApp:         appriseApp,
 		ctx:                pluginCtx, // Use the cancellable context
 		cancel:             cancel,
 		stopChan:           make(chan struct{}),
@@ -792,17 +775,6 @@ func (i *IPWhitelistShaper) getRandomWord() string {
 	return i.wordList[r.Intn(len(i.wordList))]
 }
 func (i *IPWhitelistShaper) sendNotification(message string) {
-	if i.appriseApp != nil {
-		go func(message string, appriseApp *apprise.Apprise, pluginName string) {
-		    responses := appriseApp.Notify("IPWhitelistShaper", message, apprise.NotifyTypeInfo)
-		    for _, response := range responses {
-		  	    if !response.Success {
-		  		    fmt.Printf("[%s] ERROR Apprise notification (%s) returned error: %s\n",
-		  		    pluginName, response.ServiceID, response.Error)
-		  	    }
-		    }
-		 }(message, i.appriseApp, i.name)
-	}
 	if i.config.NotificationURL == "" {
 		return
 	}
