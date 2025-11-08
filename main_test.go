@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/hhftechnology/ipwhitelistshaper/src"
+	"github.com/hhftechnology/ipwhitelistshaper"
 )
 
 func testRequest(uri string, handler http.Handler, clientIP string) *httptest.ResponseRecorder {

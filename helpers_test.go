@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strconv"
 
-	i "github.com/hhftechnology/ipwhitelistshaper/src"
+	i "github.com/hhftechnology/ipwhitelistshaper"
 )
 
 type StubNotificationService struct {
