@@ -201,22 +201,22 @@ func (t TelegramNotificationService) ExecRequest(payload any) {
 }
 
 func (t TelegramNotificationService) SendApproveConfirmNotification(ipData IPData) {
-	message := fmt.Sprintf("✅ Whitelisted *%s* for *%d* seconds", ipData.IP, t.service.config.ExpirationTime)
+	message := fmt.Sprintf("✅ Whitelisted <b>%s</b> for <b>%d</b> seconds", ipData.IP, t.service.config.ExpirationTime)
 	payload := map[string]string{
 		"text": message,
-		"parse_mode": "MarkdownV2",
+		"parse_mode": "HTML",
 	}
 	t.ExecRequest(payload)
 }
 
 func (t TelegramNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
 	approvalLink := ApprovalLink(approvalURLBase, t.service.config.ExpirationTime, ipData)
-	message := fmt.Sprintf("Access request from *%s*\nValidation code: `%s`",
+	message := fmt.Sprintf("Access request from <b>%s</b>\nValidation code: <code>%s</code>",
 		ipData.IP, ipData.ValidationCode,
 	)
 	payload := map[string]any{
 		"text": message,
-		"parse_mode": "MarkdownV2",
+		"parse_mode": "HTML",
 		"reply_markup": map[string]any{
 			"inline_keyboard": [][]map[string]string{
 				{
