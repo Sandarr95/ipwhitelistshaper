@@ -44,24 +44,24 @@ type GenericNotificationService struct {
 	service *NotificationService
 }
 
-func (g GenericNotificationService) ExecRequest(message string) {
+func (g GenericNotificationService) execRequest(message string) {
 	values := url.Values{}
 	values.Set("message", message)
 	body := bytes.NewBufferString(values.Encode())
-	ExecRequest(g.service, "POST", "application/x-www-form-urlencoded", body)
+	g.service.execRequest("POST", "application/x-www-form-urlencoded", body)
 }
 
 func (g GenericNotificationService) SendApproveConfirmNotification(ipData IPData) {
 	message := fmt.Sprintf("✅ Whitelisted %s for %d seconds", ipData.IP, g.service.config.ExpirationTime)
-	g.ExecRequest(message)
+	g.execRequest(message)
 }
 
 func (g GenericNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
-	approvalLink := ApprovalLink(approvalURLBase, g.service.config.ExpirationTime, ipData)
+	approvalLink := approvalLink(approvalURLBase, g.service.config.ExpirationTime, ipData)
 	message := fmt.Sprintf("Access request from *%s*\nValidation code: `%s`\nApprove link:\n```%s```",
 		ipData.IP, ipData.ValidationCode, approvalLink,
 	)
-	g.ExecRequest(message)
+	g.execRequest(message)
 }
 
 type StandardOutNotificationService struct {
@@ -74,7 +74,7 @@ func (std StandardOutNotificationService) SendApproveConfirmNotification(ipData 
 }
 
 func (std StandardOutNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
-	approvalLink := ApprovalLink(approvalURLBase, std.service.config.ExpirationTime, ipData)
+	approvalLink := approvalLink(approvalURLBase, std.service.config.ExpirationTime, ipData)
 	message := fmt.Sprintf("Access request from *%s*\nValidation code: `%s`\nApprove link:\n```%s```",
 		ipData.IP, ipData.ValidationCode, approvalLink,
 	)
@@ -85,14 +85,14 @@ type DiscordNotificationService struct {
 	service *NotificationService
 }
 
-func (d DiscordNotificationService) ExecRequest(payload any) {
+func (d DiscordNotificationService) execRequest(payload any) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("[%s] ERROR creating Discord payload: %v\n", d.service.name, err)
 		return
 	}
 	body := bytes.NewBuffer(jsonData)
-	ExecRequest(d.service, "POST", "application/json", body)
+	d.service.execRequest("POST", "application/json", body)
 }
 
 func (d DiscordNotificationService) SendApproveConfirmNotification(ipData IPData) {
@@ -100,11 +100,11 @@ func (d DiscordNotificationService) SendApproveConfirmNotification(ipData IPData
 	payload := map[string]string{
 		"content": message,
 	}
-	d.ExecRequest(payload)
+	d.execRequest(payload)
 }
 
 func (d DiscordNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
-	approvalLink := ApprovalLink(approvalURLBase, d.service.config.ExpirationTime, ipData)
+	approvalLink := approvalLink(approvalURLBase, d.service.config.ExpirationTime, ipData)
 	var payload = make(map[string]any)
 	if strings.Contains(d.service.config.NotificationURL, "with_components=true") {
 		message := fmt.Sprintf("Access request from **%s**\nValidation code: `%s`",
@@ -133,21 +133,21 @@ func (d DiscordNotificationService) SendKnockNotification(approvalURLBase string
 			"content": message,
 		}
 	}
-	d.ExecRequest(payload)
+	d.execRequest(payload)
 }
 
 type SlackNotificationService struct {
 	service *NotificationService
 }
 
-func (s SlackNotificationService) ExecRequest(payload any) {
+func (s SlackNotificationService) execRequest(payload any) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("[%s] ERROR creating Slack payload: %v\n", s.service.name, err)
 		return
 	}
 	body := bytes.NewBuffer(jsonData)
-	ExecRequest(s.service, "POST", "application/json", body)
+	s.service.execRequest("POST", "application/json", body)
 }
 
 func (s SlackNotificationService) SendApproveConfirmNotification(ipData IPData) {
@@ -155,11 +155,11 @@ func (s SlackNotificationService) SendApproveConfirmNotification(ipData IPData) 
 	payload := map[string]string{
 		"text": message,
 	}
-	s.ExecRequest(payload)
+	s.execRequest(payload)
 }
 
 func (s SlackNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
-	approvalLink := ApprovalLink(approvalURLBase, s.service.config.ExpirationTime, ipData)
+	approvalLink := approvalLink(approvalURLBase, s.service.config.ExpirationTime, ipData)
 	message := fmt.Sprintf("Access request from *%s*\nValidation code: `%s`",
 		ipData.IP, ipData.ValidationCode,
 	)
@@ -183,21 +183,21 @@ func (s SlackNotificationService) SendKnockNotification(approvalURLBase string, 
 			}},
 		}},
 	}
-	s.ExecRequest(payload)
+	s.execRequest(payload)
 }
 
 type TelegramNotificationService struct {
 	service *NotificationService
 }
 
-func (t TelegramNotificationService) ExecRequest(payload any) {
+func (t TelegramNotificationService) execRequest(payload any) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("[%s] ERROR creating Telegram payload: %v\n", t.service.name, err)
 		return
 	}
 	body := bytes.NewBuffer(jsonData)
-	ExecRequest(t.service, "POST", "application/json", body)
+	t.service.execRequest("POST", "application/json", body)
 }
 
 func (t TelegramNotificationService) SendApproveConfirmNotification(ipData IPData) {
@@ -206,11 +206,11 @@ func (t TelegramNotificationService) SendApproveConfirmNotification(ipData IPDat
 		"text": message,
 		"parse_mode": "HTML",
 	}
-	t.ExecRequest(payload)
+	t.execRequest(payload)
 }
 
 func (t TelegramNotificationService) SendKnockNotification(approvalURLBase string, ipData IPData) {
-	approvalLink := ApprovalLink(approvalURLBase, t.service.config.ExpirationTime, ipData)
+	approvalLink := approvalLink(approvalURLBase, t.service.config.ExpirationTime, ipData)
 	message := fmt.Sprintf("Access request from <b>%s</b>\nValidation code: <code>%s</code>",
 		ipData.IP, ipData.ValidationCode,
 	)
@@ -228,16 +228,16 @@ func (t TelegramNotificationService) SendKnockNotification(approvalURLBase strin
 			},
 		},
 	}
-	t.ExecRequest(payload)
+	t.execRequest(payload)
 }
 
-func ApprovalLink(approvalURLBase string, expirationTime int, ipData IPData) string {
+func approvalLink(approvalURLBase string, expirationTime int, ipData IPData) string {
 	return fmt.Sprintf("%s/approve?ip=%s&token=%s&validationCode=%s&expiration=%d",
 		approvalURLBase, url.QueryEscape(ipData.IP), url.QueryEscape(ipData.ValidationID),
 		url.QueryEscape(ipData.ValidationCode), expirationTime)
 }
 
-func ExecRequest(service *NotificationService, method string, contentType string, body io.Reader) {
+func (service *NotificationService) execRequest(method string, contentType string, body io.Reader) {
 	req, err := http.NewRequestWithContext(
 		service.ctx, method, service.config.NotificationURL, body,
 	)
