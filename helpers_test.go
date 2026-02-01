@@ -10,23 +10,29 @@ import (
 )
 
 type StubNotificationService struct {
-	lastKnock i.IPData
-	lastApprove i.IPData
+	knockCh chan i.IPData
+	approveCh chan i.IPData
 }
 
 func (s *StubNotificationService) SendKnockNotification(approvalURLBase string, ipData i.IPData) {
-	s.lastKnock = ipData
+	select {
+	case s.knockCh <- ipData:
+	default:
+	}
 }
 
 func (s *StubNotificationService) SendApproveConfirmNotification(ipData i.IPData) {
-	s.lastApprove = ipData
+	select {
+	case s.approveCh <- ipData:
+	default:
+	}
 }
 
-func (s *StubNotificationService) getApprovalQueryString() string {
+func getApprovalQueryString(ipData i.IPData) string {
 	params2 := url.Values{}
-	params2.Add("token", s.lastKnock.ValidationID)
-	params2.Add("validationCode", s.lastKnock.ValidationCode)
-	params2.Add("ip", s.lastKnock.IP)
+	params2.Add("token", ipData.ValidationID)
+	params2.Add("validationCode", ipData.ValidationCode)
+	params2.Add("ip", ipData.IP)
 	params2.Add("expiration", strconv.Itoa(300))
 	return params2.Encode()
 }
@@ -48,7 +54,10 @@ func (s *StubStorageService) Load() (map[string]i.IPData, map[string]i.IPData, e
 
 func StubNew(ctx context.Context, next http.Handler, config *i.Config, name string) (http.Handler, *StubNotificationService, *StubStorageService, error) {
 	_, cancel := context.WithCancel(ctx)
-	notificationService := &StubNotificationService{}
+	notificationService := &StubNotificationService{
+		knockCh:   make(chan i.IPData, 1),
+		approveCh: make(chan i.IPData, 1),
+	}
 	storageService := &StubStorageService{
 		countStores: 0,
 		countLoads: 0,

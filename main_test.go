@@ -7,8 +7,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
-	"github.com/hhftechnology/ipwhitelistshaper"
+	i "github.com/hhftechnology/ipwhitelistshaper"
 )
 
 func testRequest(uri string, handler http.Handler, clientIP string) *httptest.ResponseRecorder {
@@ -22,7 +23,7 @@ func testRequest(uri string, handler http.Handler, clientIP string) *httptest.Re
 
 func TestIPWhitelistShaperHandler(t *testing.T) {
 	// Create a test configuration
-	config := ipwhitelistshaper.CreateConfig()
+	config := i.CreateConfig()
 	config.DefaultPrivateClassSources = false
 	config.KnockEndpoint = "/knock-knock"
 	config.WhitelistedIPs = []string{"192.168.1.1/32"}
@@ -75,14 +76,20 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	if knockRec.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Errorf("Expected Content-Type %q, got %q", "text/html; charset=utf-8", knockRec.Header().Get("Content-Type"))
 	}
-	if notificationA_1.lastKnock.IP != clientIP {
-		t.Errorf("Expected last knock from IP: %q, got %q", clientIP, notificationA_1.lastKnock.IP)
+	var lastKnock i.IPData
+	select {
+	case lastKnock = <-notificationA_1.knockCh:
+	case <-time.After(time.Second):
+		t.Fatal("Knock notification was never sent")
+	}
+	if lastKnock.IP != clientIP {
+		t.Errorf("Expected last knock from IP: %q, got %q", clientIP, lastKnock.IP)
 	}
 
 	// Test 3: Trying approve with wrong token fails
 	wrongUrlParams := url.Values{}
-	wrongUrlParams.Add("validationCode", notificationA_1.lastKnock.ValidationCode)
-	wrongUrlParams.Add("ip", notificationA_1.lastKnock.IP)
+	wrongUrlParams.Add("validationCode", lastKnock.ValidationCode)
+	wrongUrlParams.Add("ip", lastKnock.IP)
 	wrongApproveUri := fmt.Sprintf("/approve?expiration=300&token=invalid&%s", wrongUrlParams.Encode())
 	wrongApproveRec := testRequest(wrongApproveUri, handlerA_1, clientIP)
 	if wrongApproveRec.Code != http.StatusForbidden {
@@ -96,10 +103,20 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	}
 
 	// Test 5: Approval with correct parameters succeeds
-	approveUri := fmt.Sprintf("/approve?%s", notificationA_1.getApprovalQueryString())
+	approveUri := fmt.Sprintf("/approve?%s", getApprovalQueryString(lastKnock))
 	approveRec := testRequest(approveUri, handlerA_1, clientIP)
 	if approveRec.Code != http.StatusOK {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, approveRec.Code)
+	}
+
+	var lastApprove i.IPData
+	select {
+	case lastApprove = <-notificationA_1.approveCh:
+	case <-time.After(time.Second):
+		t.Fatal("Approve notification was never sent")
+	}
+	if lastApprove.IP != clientIP {
+		t.Errorf("Expected last approve for IP: %q, got %q", clientIP, lastApprove.IP)
 	}
 
 	// Test 6: Normal requests are now allowed on handlerA_1
