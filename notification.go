@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -252,11 +253,12 @@ func (service *NotificationService) execRequest(method string, contentType strin
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		if service.ctx.Err() == nil {
-			fmt.Printf("[%s] ERROR sending notification to %s: %v\n",
-				service.name, service.config.NotificationURL, err,
-			)
+		if errors.Is(err, context.Canceled) {
+			fmt.Printf("[%s] Notification skipped: plugin shutting down\n", service.name)
 		}
+		fmt.Printf("[%s] ERROR sending notification to %s: %v\n",
+			service.name, service.config.NotificationURL, err,
+		)
 		return
 	}
 	defer resp.Body.Close()

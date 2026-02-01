@@ -102,7 +102,7 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 	if approvalURLBase == "" {
 		approvalURLBase = fmt.Sprintf("%s://%s", getScheme(req), req.Host)
 	}
-	i.notificationService.SendKnockNotification(approvalURLBase, ipData)
+	go i.notificationService.SendKnockNotification(approvalURLBase, ipData)
 
 	i.serveKnockPage(rw, ipData.ValidationCode, "Your request requires approval. Please provide the validation code to the administrator.")
 }

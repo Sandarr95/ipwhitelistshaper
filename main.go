@@ -6,7 +6,7 @@ import (
 )
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	pluginCtx, cancel := context.WithCancel(ctx)
+	pluginCtx, cancel := context.WithCancel(context.Background())
 	notificationService := initNotificationService(name, config, pluginCtx)
 	storageService := initStorageService(name, config)
 
