@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,24 +56,42 @@ func NewIPWhitelistShaper(
 	return ipwhitelistshaper, nil
 }
 
+func (i *IPWhitelistShaper) getIPKey(ipStr string) string {
+	if i.config.IPv6PrefixLength <= 0 || i.config.IPv6PrefixLength >= 128 {
+		return ipStr
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return ipStr
+	}
+	if ip.To4() != nil {
+		return ipStr
+	}
+
+	mask := net.CIDRMask(i.config.IPv6PrefixLength, 128)
+	maskedIP := ip.Mask(mask)
+	return maskedIP.String()
+}
+
 func (i *IPWhitelistShaper) isWhitelisted(clientIP string) bool {
 	i.mutex.RLock()
 	defer i.mutex.RUnlock()
-	return isValid(i.whitelistedIPs, clientIP)
+	return isValid(i.whitelistedIPs, i.getIPKey(clientIP))
 }
 
 // handleKnockRequest processes requests to the knock-knock endpoint
 func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http.Request, clientIP string) {
+	key := i.getIPKey(clientIP)
 	i.mutex.Lock()
 
-	if isValid(i.whitelistedIPs, clientIP) {
+	if isValid(i.whitelistedIPs, key) {
 		i.mutex.Unlock()
 		http.Redirect(rw, req, "/", http.StatusFound)
 		return
 	}
 
 
-	if pendingIpData, _ := getValid(i.pendingApprovals, clientIP); pendingIpData != nil {
+	if pendingIpData, _ := getValid(i.pendingApprovals, key); pendingIpData != nil {
 		validationCode := pendingIpData.ValidationCode
 		i.mutex.Unlock()
 		if err := i.saveState(); err != nil {
@@ -88,7 +107,7 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 		ValidationID:   i.generateToken(clientIP),
 		ValidationCode: i.getRandomUnusedWord(),
 	}
-	i.pendingApprovals[clientIP] = ipData
+	i.pendingApprovals[key] = ipData
 
 	i.mutex.Unlock() // Unlock before synchronous save
 
@@ -160,6 +179,8 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		return
 	}
 
+	key := i.getIPKey(ip)
+
 	// --- Start Critical Section ---
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
@@ -171,17 +192,17 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		i.pendingApprovals = pendingApprovals
 	}
 	// Log debugging info
-	fmt.Printf("[%s] DEBUG State loaded in handleApproveRequest for IP %s. Current pending map size: %d. Content samples: %+v\n",
-		i.name, ip, len(i.pendingApprovals), maskDebugData(i.pendingApprovals))
+	fmt.Printf("[%s] DEBUG State loaded in handleApproveRequest for IP %s (Key: %s). Current pending map size: %d. Content samples: %+v\n",
+		i.name, ip, key, len(i.pendingApprovals), maskDebugData(i.pendingApprovals))
 
 	// Check if IP and token match the *now loaded* pending approval data
-	pendingData, exists := i.pendingApprovals[ip]
+	pendingData, exists := i.pendingApprovals[key]
 	if !exists {
 		// NEW CODE: Check if the IP is already whitelisted
-		if whitelistData, isWhitelisted := i.whitelistedIPs[ip]; isWhitelisted {
+		if whitelistData, isWhitelisted := i.whitelistedIPs[key]; isWhitelisted {
 			// IP is already approved, show success page but don't send notification again
-			fmt.Printf("[%s] INFO IP %s is already whitelisted, expires at %s\n",
-				i.name, ip, whitelistData.ExpiresAt.Format(time.RFC3339))
+			fmt.Printf("[%s] INFO IP %s (Key: %s) is already whitelisted, expires at %s\n",
+				i.name, ip, key, whitelistData.ExpiresAt.Format(time.RFC3339))
 
 			// Calculate remaining time
 			remainingTime := int(time.Until(whitelistData.ExpiresAt).Seconds())
@@ -196,8 +217,8 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		}
 
 		// Original error message for IP not found in either list
-		fmt.Printf("[%s] ERROR No pending approval found in current state for IP: %s (Token: %s). Approval attempt failed. Pending map keys: %v\n",
-			i.name, ip, token, getMapKeys(i.pendingApprovals))
+		fmt.Printf("[%s] ERROR No pending approval found in current state for IP: %s (Key: %s, Token: %s). Approval attempt failed. Pending map keys: %v\n",
+			i.name, ip, key, token, getMapKeys(i.pendingApprovals))
 		http.Error(rw, "Invalid token or IP address: No pending approval found", http.StatusForbidden)
 		return
 	}
@@ -230,8 +251,8 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		ValidationID:   token,
 		ValidationCode: pendingData.ValidationCode,
 	}
-	i.whitelistedIPs[ip] = ipData
-	delete(i.pendingApprovals, ip) // Remove from pending
+	i.whitelistedIPs[key] = ipData
+	delete(i.pendingApprovals, key) // Remove from pending
 
 	// Try to save state, but don't fail if it doesn't work
 	if err := i.storageService.Store(i.whitelistedIPs, i.pendingApprovals); err != nil {

@@ -81,6 +81,9 @@ http:
           
           # Allow private networks by default (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
           defaultPrivateClassSources: true
+
+          # IPv6 prefix length for whitelisting (e.g., 64). 0 or > 128 means exact match (default).
+          ipv6PrefixLength: 0
           
           # Configure how long (in seconds) an approved IP should remain in the whitelist
           expirationTime: 300
@@ -249,6 +252,7 @@ ipwhitelistshaper:
         approvalURL: "https://wallos.development.hhf.technology"
         notificationURL: "https://discord.com/api/webhooks/"
         defaultPrivateClassSources: true
+        ipv6PrefixLength: 0
         expirationTime: 300
         ipStrategyDepth: 0
         secretKey: ""

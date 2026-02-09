@@ -5,6 +5,7 @@ type Config struct {
 	ExcludedIPs                []string `json:"excludedIPs,omitempty"`
 	WhitelistedIPs             []string `json:"whitelistedIPs,omitempty"`
 	IPStrategyDepth            int      `json:"ipStrategyDepth,omitempty"`
+	IPv6PrefixLength           int      `json:"ipv6PrefixLength,omitempty"` // 0 or > 128 means exact match (default).
 	DefaultPrivateClassSources bool     `json:"defaultPrivateClassSources,omitempty"`
 	ExpirationTime             int      `json:"expirationTime,omitempty"` // Whitelist duration in seconds
 	SecretKey                  string   `json:"secretKey,omitempty"`
@@ -27,6 +28,7 @@ func CreateConfig() *Config {
 		ExcludedIPs:                []string{},
 		WhitelistedIPs:             []string{},
 		IPStrategyDepth:            0,
+		IPv6PrefixLength:           0,
 		DefaultPrivateClassSources: true,
 		ExpirationTime:             300, // Default 5 minutes whitelist duration
 		SecretKey:                  generateRandomKey(),

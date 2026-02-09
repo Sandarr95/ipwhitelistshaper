@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,11 @@ import (
 func testRequest(uri string, handler http.Handler, clientIP string) *httptest.ResponseRecorder {
 	url := fmt.Sprintf("http://localhost%s", uri)
 	request := httptest.NewRequest(http.MethodGet, url, nil)
-	request.RemoteAddr = fmt.Sprintf("%s:1234", clientIP)
+	if strings.Contains(clientIP, ":") {
+		request.RemoteAddr = fmt.Sprintf("[%s]:1234", clientIP)
+	} else {
+		request.RemoteAddr = fmt.Sprintf("%s:1234", clientIP)
+	}
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	return recorder
