@@ -91,7 +91,7 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 	}
 
 
-	if pendingIpData, _ := getValid(i.pendingApprovals, key); pendingIpData != nil {
+	if pendingIpData, _ := getValid(i.pendingApprovals, clientIP); pendingIpData != nil {
 		validationCode := pendingIpData.ValidationCode
 		i.mutex.Unlock()
 		if err := i.saveState(); err != nil {
@@ -107,7 +107,7 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 		ValidationID:   i.generateToken(clientIP),
 		ValidationCode: i.getRandomUnusedWord(),
 	}
-	i.pendingApprovals[key] = ipData
+	i.pendingApprovals[clientIP] = ipData
 
 	i.mutex.Unlock() // Unlock before synchronous save
 
@@ -196,7 +196,7 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		i.name, ip, key, len(i.pendingApprovals), maskDebugData(i.pendingApprovals))
 
 	// Check if IP and token match the *now loaded* pending approval data
-	pendingData, exists := i.pendingApprovals[key]
+	pendingData, exists := i.pendingApprovals[ip]
 	if !exists {
 		// NEW CODE: Check if the IP is already whitelisted
 		if whitelistData, isWhitelisted := i.whitelistedIPs[key]; isWhitelisted {
@@ -252,7 +252,13 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		ValidationCode: pendingData.ValidationCode,
 	}
 	i.whitelistedIPs[key] = ipData
-	delete(i.pendingApprovals, key) // Remove from pending
+
+	// Remove all pending approvals for the same prefix
+	for pIP := range i.pendingApprovals {
+		if i.getIPKey(pIP) == key {
+			delete(i.pendingApprovals, pIP)
+		}
+	}
 
 	// Try to save state, but don't fail if it doesn't work
 	if err := i.storageService.Store(i.whitelistedIPs, i.pendingApprovals); err != nil {

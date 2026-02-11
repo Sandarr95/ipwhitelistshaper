@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +136,83 @@ func TestIPv4WithIPv6Config(t *testing.T) {
 	// IP2 Forbidden (Exact match for IPv4)
 	if testRequest("/", handler, clientIP2).Code != http.StatusForbidden {
 		t.Error("IP2 should be forbidden (IPv4 exact match)")
+	}
+}
+
+func TestIPv6PrefixKnockPrivacyAndCleanup(t *testing.T) {
+	config := i.CreateConfig()
+	config.DefaultPrivateClassSources = false
+	config.KnockEndpoint = "/knock-knock"
+	config.IPv6PrefixLength = 64
+	config.StorageEnabled = false
+
+	clientIP1 := "2001:db8::1"
+	clientIP2 := "2001:db8::2" // Same prefix /64
+
+	route := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusAccepted)
+	})
+
+	handler, notification, _, _ := StubNew(context.Background(), route, config, "repro")
+
+	// 1. Client 1 knocks
+	rec1 := testRequest("/knock-knock", handler, clientIP1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec1.Code)
+	}
+
+	var knock1 i.IPData
+	select {
+	case knock1 = <-notification.knockCh:
+	case <-time.After(time.Second):
+		t.Fatal("Knock 1 notification not received")
+	}
+
+	// 2. Client 2 knocks (same prefix)
+	// Desired behavior: Client 2 should NOT see a pending request from Client 1
+	rec2 := testRequest("/knock-knock", handler, clientIP2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d", rec2.Code)
+	}
+
+	if strings.Contains(rec2.Body.String(), "An approval request is already pending") {
+		t.Errorf("Client 2 saw pending request message, violating privacy")
+	}
+
+	var knock2 i.IPData
+	select {
+	case knock2 = <-notification.knockCh:
+	case <-time.After(time.Second):
+		t.Fatal("Knock 2 notification not received")
+	}
+
+	if knock1.ValidationCode == knock2.ValidationCode {
+		t.Errorf("Client 1 and Client 2 got the same validation code")
+	}
+
+	// 3. Admin approves Client 1
+	approveUri1 := fmt.Sprintf("/approve?%s", getApprovalQueryString(knock1))
+	testRequest(approveUri1, handler, clientIP1)
+
+	select {
+	case <-notification.approveCh:
+	case <-time.After(time.Second):
+		t.Fatal("Approve 1 notification not received")
+	}
+
+	// 4. Client 1 and Client 2 should both be allowed now
+	if testRequest("/", handler, clientIP1).Code != http.StatusAccepted {
+		t.Error("Client 1 should be allowed")
+	}
+	if testRequest("/", handler, clientIP2).Code != http.StatusAccepted {
+		t.Error("Client 2 should be allowed")
+	}
+
+	// 5. Admin tries to approve Client 2 (should be already approved/cleaned up)
+	approveUri2 := fmt.Sprintf("/approve?%s", getApprovalQueryString(knock2))
+	recApprove2 := testRequest(approveUri2, handler, clientIP2)
+
+	if recApprove2.Code != http.StatusOK {
+		t.Errorf("Expected 200 for already approved, got %d", recApprove2.Code)
 	}
 }
