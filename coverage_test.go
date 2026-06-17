@@ -184,6 +184,57 @@ func TestApproveRejectsCrossOriginPost(t *testing.T) {
 	}
 }
 
+// TestApproveDoesNotLeakState: probing /approve with an invalid token must
+// return an identical response whether the IP is whitelisted, pending, or
+// unknown — otherwise the endpoint is an oracle for an IP's state.
+func TestApproveDoesNotLeakState(t *testing.T) {
+	config := i.CreateConfig()
+	config.DefaultPrivateClassSources = false
+	config.StorageEnabled = false
+	config.KnockEndpoint = "/knock-knock"
+
+	handler, notif, _, err := StubNew(context.Background(), acceptingRoute(), config, "approveLeak")
+	if err != nil {
+		t.Fatalf("Error creating plugin handler: %v", err)
+	}
+
+	whitelistedIP := "203.0.113.61"
+	knockAndApprove(t, handler, notif, whitelistedIP)
+
+	pendingIP := "203.0.113.62"
+	testRequest("/knock-knock", handler, pendingIP)
+	select {
+	case <-notif.knockCh:
+	case <-time.After(time.Second):
+		t.Fatal("knock notification was never sent")
+	}
+
+	unknownIP := "203.0.113.63"
+
+	probe := func(ip string) (int, string) {
+		params := url.Values{}
+		params.Add("ip", ip)
+		params.Add("token", "garbage-token")
+		params.Add("validationCode", "garbage-code")
+		rec := postApprove(handler, ip, params.Encode())
+		return rec.Code, rec.Body.String()
+	}
+
+	codeW, bodyW := probe(whitelistedIP)
+	codeP, bodyP := probe(pendingIP)
+	codeU, bodyU := probe(unknownIP)
+
+	if codeW != codeP || codeP != codeU {
+		t.Errorf("status codes leak state: whitelisted=%d pending=%d unknown=%d", codeW, codeP, codeU)
+	}
+	if bodyW != bodyP || bodyP != bodyU {
+		t.Errorf("response bodies leak state:\n whitelisted=%q\n pending=%q\n unknown=%q", bodyW, bodyP, bodyU)
+	}
+	if codeW != http.StatusForbidden {
+		t.Errorf("expected 403 for an invalid approval attempt, got %d", codeW)
+	}
+}
+
 func TestApproveIgnoresClientSuppliedExpiration(t *testing.T) {
 	config := i.CreateConfig()
 	config.DefaultPrivateClassSources = false

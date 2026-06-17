@@ -80,12 +80,3 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen]
 }
-
-// Helper function to get map keys for debugging
-func getMapKeys(m map[string]IPData) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	return keys
-}

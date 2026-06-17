@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -246,6 +247,14 @@ func isSameOrigin(req *http.Request) bool {
 	return parsed.Host == req.Host
 }
 
+// credentialMatches reports whether the presented token and validation code
+// match the stored entry, using constant-time comparison for the token.
+func credentialMatches(data IPData, token, validationCode string) bool {
+	tokenOK := subtle.ConstantTimeCompare([]byte(data.ValidationID), []byte(token)) == 1
+	codeOK := subtle.ConstantTimeCompare([]byte(data.ValidationCode), []byte(validationCode)) == 1
+	return tokenOK && codeOK
+}
+
 func (i *IPWhitelistShaper) processApproval(rw http.ResponseWriter, req *http.Request) {
 	if err := req.ParseForm(); err != nil {
 		writeApproveJSON(rw, http.StatusBadRequest, approveResult{Status: "error", Message: "Invalid request body"})
@@ -277,35 +286,25 @@ func (i *IPWhitelistShaper) processApproval(rw http.ResponseWriter, req *http.Re
 	fmt.Printf("[%s] DEBUG State loaded in handleApproveRequest for IP %s (Key: %s). Current pending map size: %d. Content samples: %+v\n",
 		i.name, ip, key, len(i.pendingApprovals), maskDebugData(i.pendingApprovals))
 
-	// Pending approvals are bucketed by key (the IPv6 prefix when configured).
-	pendingData, exists := i.pendingApprovals[key]
-	if !exists {
-		if whitelistData, isWhitelisted := i.whitelistedIPs[key]; isWhitelisted {
-			fmt.Printf("[%s] INFO IP %s (Key: %s) is already whitelisted, expires at %s\n",
-				i.name, ip, key, whitelistData.ExpiresAt.Format(time.RFC3339))
-			remainingTime := int(time.Until(whitelistData.ExpiresAt).Seconds())
-			if remainingTime < 0 {
-				remainingTime = 0
-			}
-			writeApproveJSON(rw, http.StatusOK, approveResult{Status: "already", IP: ip, ExpiresIn: remainingTime})
-			return
+	// Idempotent success for a legitimate re-click: the whitelist entry retains
+	// the original token/code, so a matching credential is proof the caller held
+	// the approval link.
+	if existing, ok := i.whitelistedIPs[key]; ok && credentialMatches(existing, token, validationCode) {
+		remainingTime := int(time.Until(existing.ExpiresAt).Seconds())
+		if remainingTime < 0 {
+			remainingTime = 0
 		}
-
-		fmt.Printf("[%s] ERROR No pending approval found in current state for IP: %s (Key: %s). Approval attempt failed. Pending map keys: %v\n",
-			i.name, ip, key, getMapKeys(i.pendingApprovals))
-		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "No pending approval found for this address"})
+		writeApproveJSON(rw, http.StatusOK, approveResult{Status: "already", IP: ip, ExpiresIn: remainingTime})
 		return
 	}
 
-	if pendingData.ValidationID != token {
-		fmt.Printf("[%s] ERROR Token mismatch for IP: %s.\n", i.name, ip)
-		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Invalid token"})
-		return
-	}
-
-	if pendingData.ValidationCode != validationCode {
-		fmt.Printf("[%s] ERROR Validation code mismatch for IP: %s.\n", i.name, ip)
-		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Invalid validation code"})
+	// Pending approvals are bucketed by key (the IPv6 prefix when configured).
+	// Unknown IP, no pending, wrong token, and wrong code all return the SAME
+	// response, so the endpoint cannot be used to probe an IP's state.
+	pendingData, exists := i.pendingApprovals[key]
+	if !exists || !credentialMatches(pendingData, token, validationCode) {
+		fmt.Printf("[%s] INFO approval rejected for IP %s (key %s, pending exists: %t)\n", i.name, ip, key, exists)
+		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Invalid or expired approval link"})
 		return
 	}
 	// --- End Validation Section ---
