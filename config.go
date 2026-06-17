@@ -8,6 +8,7 @@ type Config struct {
 	IPv6PrefixLength           int      `json:"ipv6PrefixLength,omitempty"` // 0 or > 128 means exact match (default).
 	DefaultPrivateClassSources bool     `json:"defaultPrivateClassSources,omitempty"`
 	ExpirationTime             int      `json:"expirationTime,omitempty"` // Whitelist duration in seconds
+	MaxPendingApprovals        int      `json:"maxPendingApprovals,omitempty"` // Cap on concurrent pending approvals (<=0 uses default)
 	SecretKey                  string   `json:"secretKey,omitempty"`
 	NotificationURL            string   `json:"notificationURL,omitempty"`
 	NotificationURLFile        string   `json:"notificationURLFile,omitempty"`
@@ -31,6 +32,7 @@ func CreateConfig() *Config {
 		IPv6PrefixLength:           0,
 		DefaultPrivateClassSources: true,
 		ExpirationTime:             300, // Default 5 minutes whitelist duration
+		MaxPendingApprovals:        1024,
 		SecretKey:                  generateRandomKey(),
 		KnockEndpoint:              "/knock-knock",
 		ApprovalURL:                "",

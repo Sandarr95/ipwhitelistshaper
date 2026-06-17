@@ -2,7 +2,6 @@ package ipwhitelistshaper_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -61,8 +60,7 @@ func TestIPv6PrefixWhitelist(t *testing.T) {
 	}
 
 	// Test 3: Approve clientIP1
-	approveUri := fmt.Sprintf("/approve?%s", getApprovalQueryString(lastKnock))
-	approveRec := testRequest(approveUri, handler, clientIP1) // Approve request coming from clientIP1
+	approveRec := postApprove(handler, clientIP1, getApprovalQueryString(lastKnock)) // Approve request coming from clientIP1
 	if approveRec.Code != http.StatusOK {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, approveRec.Code)
 	}
@@ -120,8 +118,7 @@ func TestIPv4WithIPv6Config(t *testing.T) {
 	}
 
 	// Approve IP1
-	approveUri := fmt.Sprintf("/approve?%s", getApprovalQueryString(lastKnock))
-	testRequest(approveUri, handler, clientIP1)
+	postApprove(handler, clientIP1, getApprovalQueryString(lastKnock))
 	select {
 	case <-notification.approveCh:
 	case <-time.After(time.Second):
@@ -139,7 +136,10 @@ func TestIPv4WithIPv6Config(t *testing.T) {
 	}
 }
 
-func TestIPv6PrefixKnockPrivacyAndCleanup(t *testing.T) {
+// With IPv6 prefix bucketing, a whole subnet shares a single pending approval:
+// a second client in the same /64 joins the existing request (one validation
+// code, no second notification) instead of creating its own.
+func TestIPv6PrefixSharedPendingPerSubnet(t *testing.T) {
 	config := i.CreateConfig()
 	config.DefaultPrivateClassSources = false
 	config.KnockEndpoint = "/knock-knock"
@@ -153,14 +153,13 @@ func TestIPv6PrefixKnockPrivacyAndCleanup(t *testing.T) {
 		rw.WriteHeader(http.StatusAccepted)
 	})
 
-	handler, notification, _, _ := StubNew(context.Background(), route, config, "repro")
+	handler, notification, _, _ := StubNew(context.Background(), route, config, "ipv6SharedPending")
 
-	// 1. Client 1 knocks
+	// 1. Client 1 knocks and triggers the only notification for this subnet.
 	rec1 := testRequest("/knock-knock", handler, clientIP1)
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d", rec1.Code)
 	}
-
 	var knock1 i.IPData
 	select {
 	case knock1 = <-notification.knockCh:
@@ -168,39 +167,34 @@ func TestIPv6PrefixKnockPrivacyAndCleanup(t *testing.T) {
 		t.Fatal("Knock 1 notification not received")
 	}
 
-	// 2. Client 2 knocks (same prefix)
-	// Desired behavior: Client 2 should NOT see a pending request from Client 1
+	// 2. Client 2 (same /64) joins the existing pending request.
 	rec2 := testRequest("/knock-knock", handler, clientIP2)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d", rec2.Code)
 	}
-
-	if strings.Contains(rec2.Body.String(), "An approval request is already pending") {
-		t.Errorf("Client 2 saw pending request message, violating privacy")
+	if !strings.Contains(rec2.Body.String(), "An approval request is already pending") {
+		t.Errorf("Client 2 should share the subnet's pending approval")
+	}
+	if !strings.Contains(rec2.Body.String(), knock1.ValidationCode) {
+		t.Errorf("Client 2 should see the same validation code %q", knock1.ValidationCode)
 	}
 
-	var knock2 i.IPData
+	// No second notification should be sent for the same subnet.
 	select {
-	case knock2 = <-notification.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("Knock 2 notification not received")
+	case extra := <-notification.knockCh:
+		t.Errorf("Unexpected second notification for same subnet: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
 	}
 
-	if knock1.ValidationCode == knock2.ValidationCode {
-		t.Errorf("Client 1 and Client 2 got the same validation code")
-	}
-
-	// 3. Admin approves Client 1
-	approveUri1 := fmt.Sprintf("/approve?%s", getApprovalQueryString(knock1))
-	testRequest(approveUri1, handler, clientIP1)
-
+	// 3. Admin approves the subnet (via client 1).
+	postApprove(handler, clientIP1, getApprovalQueryString(knock1))
 	select {
 	case <-notification.approveCh:
 	case <-time.After(time.Second):
-		t.Fatal("Approve 1 notification not received")
+		t.Fatal("Approve notification not received")
 	}
 
-	// 4. Client 1 and Client 2 should both be allowed now
+	// 4. Both clients in the subnet are now allowed.
 	if testRequest("/", handler, clientIP1).Code != http.StatusAccepted {
 		t.Error("Client 1 should be allowed")
 	}
@@ -208,10 +202,8 @@ func TestIPv6PrefixKnockPrivacyAndCleanup(t *testing.T) {
 		t.Error("Client 2 should be allowed")
 	}
 
-	// 5. Admin tries to approve Client 2 (should be already approved/cleaned up)
-	approveUri2 := fmt.Sprintf("/approve?%s", getApprovalQueryString(knock2))
-	recApprove2 := testRequest(approveUri2, handler, clientIP2)
-
+	// 5. Re-approving the already-whitelisted subnet returns the success page.
+	recApprove2 := postApprove(handler, clientIP2, getApprovalQueryString(knock1))
 	if recApprove2.Code != http.StatusOK {
 		t.Errorf("Expected 200 for already approved, got %d", recApprove2.Code)
 	}

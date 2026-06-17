@@ -1,7 +1,9 @@
 package ipwhitelistshaper
 
 import (
+	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 )
 
@@ -34,30 +36,84 @@ func knockPageHtml(message string, validationCode string) string {
 			<p>Validation code: <span class="highlight">%s</span></p>
 			<p>An administrator needs to approve your access using this code.</p>
 		</div>
-    `, message, validationCode)
+    `, html.EscapeString(message), html.EscapeString(validationCode))
 	return baseHtml("Approval Required", content)
 }
 
-func approvedPageHtml(ip string, expirationTime int) string {
-	content := fmt.Sprintf(`
-		<div class="container">
-			<h1>Access Approved</h1>
-			<p><span class="success">IP address <span class="ip-address">%s</span> has been successfully whitelisted.</span></p>
-			<p class="expiration">Access will expire in %d seconds.</p>
-		</div>
-    `, ip, expirationTime)
-	return baseHtml("Access Approved", content)
+// approveResult is the JSON returned by the POST /approve endpoint and rendered
+// client-side by the approval page.
+type approveResult struct {
+	Status    string `json:"status"` // "approved", "already" or "error"
+	IP        string `json:"ip"`
+	ExpiresIn int    `json:"expiresIn"`
+	Message   string `json:"message"`
 }
 
-func alreadyApprovedPageHtml(ip string, remainingTime int) string {
-	content := fmt.Sprintf(`
+// approvePageHtml is served on GET /approve. The token travels in the URL
+// fragment (never sent to the server), so this page reads it client-side,
+// scrubs it from history, and POSTs the approval. Result text is rendered with
+// textContent only — never innerHTML — so a hostile fragment cannot inject markup.
+func approvePageHtml() string {
+	content := `
 		<div class="container">
-			<h1>Already Approved</h1>
-			<p><span class="success">IP address <span class="ip-address">%s</span> is already whitelisted.</span></p>
-			<p class="expiration">Access will expire in %d seconds.</p>
+			<h1>Approving&hellip;</h1>
+			<p id="status">Validating your approval request&hellip;</p>
+			<noscript><p>JavaScript is required to approve access requests.</p></noscript>
 		</div>
-    `, ip, remainingTime)
-	return baseHtml("Already Approved", content)
+		<script>
+		(function () {
+			var statusEl = document.getElementById('status');
+			function show(msg) { statusEl.textContent = msg; }
+			var params = new URLSearchParams(location.hash.replace(/^#!?/, ''));
+			var ip = params.get('ip');
+			var token = params.get('token');
+			history.replaceState(null, '', location.pathname);
+			if (!ip || !token) {
+				show('Nothing to approve — this link is missing its approval data or has already been used.');
+				return;
+			}
+			var body = new URLSearchParams();
+			body.set('ip', ip);
+			body.set('token', token);
+			body.set('validationCode', params.get('validationCode') || '');
+			fetch(location.pathname, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: body.toString()
+			}).then(function (resp) {
+				return resp.json();
+			}).then(function (d) {
+				if (d.status === 'approved') {
+					show('Access approved for ' + d.ip + '. It will expire in ' + d.expiresIn + ' seconds.');
+				} else if (d.status === 'already') {
+					show(d.ip + ' is already whitelisted (expires in ' + d.expiresIn + ' seconds).');
+				} else {
+					show('Approval failed: ' + (d.message || 'unknown error') + '.');
+				}
+			}).catch(function () {
+				show('Approval failed: could not reach the server.');
+			});
+		})();
+		</script>
+	`
+	return baseHtml("Approve Access", content)
+}
+
+func serveApprovePage(rw http.ResponseWriter) {
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.Header().Set("Referrer-Policy", "no-referrer")
+	rw.Header().Set("X-Frame-Options", "DENY")
+	rw.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	rw.WriteHeader(http.StatusOK)
+	rw.Write([]byte(approvePageHtml()))
+}
+
+func writeApproveJSON(rw http.ResponseWriter, status int, result approveResult) {
+	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	rw.Header().Set("Cache-Control", "no-store")
+	rw.WriteHeader(status)
+	json.NewEncoder(rw).Encode(result)
 }
 
 func serveHtml(rw http.ResponseWriter, html string) {

@@ -95,8 +95,8 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	wrongUrlParams := url.Values{}
 	wrongUrlParams.Add("validationCode", lastKnock.ValidationCode)
 	wrongUrlParams.Add("ip", lastKnock.IP)
-	wrongApproveUri := fmt.Sprintf("/approve?expiration=300&token=invalid&%s", wrongUrlParams.Encode())
-	wrongApproveRec := testRequest(wrongApproveUri, handlerA_1, clientIP)
+	wrongUrlParams.Add("token", "invalid")
+	wrongApproveRec := postApprove(handlerA_1, clientIP, wrongUrlParams.Encode())
 	if wrongApproveRec.Code != http.StatusForbidden {
 		t.Errorf("Expected status code %d, got %d", http.StatusForbidden, wrongApproveRec.Code)
 	}
@@ -108,8 +108,7 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	}
 
 	// Test 5: Approval with correct parameters succeeds
-	approveUri := fmt.Sprintf("/approve?%s", getApprovalQueryString(lastKnock))
-	approveRec := testRequest(approveUri, handlerA_1, clientIP)
+	approveRec := postApprove(handlerA_1, clientIP, getApprovalQueryString(lastKnock))
 	if approveRec.Code != http.StatusOK {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, approveRec.Code)
 	}
@@ -143,10 +142,10 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	}
 
 	// Test 9: Storage loads and stores happened
-	if storageA_1.countLoads != 3 {
-		t.Errorf("Expected status code %d, got %d", 3, storageA_1.countLoads)
+	if storageA_1.countLoads.Load() != 3 {
+		t.Errorf("Expected %d loads, got %d", 3, storageA_1.countLoads.Load())
 	}
-	if storageA_1.countStores != 2 {
-		t.Errorf("Expected status code %d, got %d", 2, storageA_1.countStores)
+	if storageA_1.countStores.Load() != 2 {
+		t.Errorf("Expected %d stores, got %d", 2, storageA_1.countStores.Load())
 	}
 }

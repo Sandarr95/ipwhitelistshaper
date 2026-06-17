@@ -87,6 +87,10 @@ http:
           
           # Configure how long (in seconds) an approved IP should remain in the whitelist
           expirationTime: 300
+
+          # Cap on concurrent pending approvals (default 1024). Knocks beyond this
+          # are rejected with 503 until pending entries are approved or expire.
+          maxPendingApprovals: 1024
           
           # Depth to look into X-Forwarded-For header (set to 1 if behind CloudFlare or another proxy)
           ipStrategyDepth: 0
@@ -180,6 +184,19 @@ The plugin sends two types of notifications:
 1. **Access Request Notifications**: When a user visits the knock-knock endpoint, a notification is sent with their IP, a validation code, and an approval link.
 2. **Status Notifications**: When an IP is approved or expires.
 
+### How the approval link works
+
+The approval link carries its token in the URL **fragment**
+(`https://.../approve#ip=...&token=...`). Because browsers and HTTP clients never
+send the fragment to the server, the token stays out of access logs, proxy logs,
+the `Referer` header and (after the page scrubs it via `history.replaceState`)
+browser history. Clicking the link opens a small page that reads the fragment and
+submits the approval via a background `POST`; approval still happens in one click.
+
+This also means **link-preview/prefetch bots cannot approve**: an automated fetch
+of the link sends a tokenless `GET`, which only serves the page and changes
+nothing. JavaScript must be enabled in the approver's browser.
+
 ### Discord Webhook Integration
 
 To use Discord for notifications:
@@ -230,6 +247,12 @@ ipwhitelistshaper:
   # Use depth 1 to get the client IP from X-Forwarded-For when behind one proxy
   ipStrategyDepth: 1
 ```
+
+> **Note:** `ipStrategyDepth` must match your number of trusted proxies. If a
+> request's `X-Forwarded-For` chain has fewer entries than the configured depth,
+> the client IP cannot be trusted and the request is **denied** (fail-closed),
+> rather than falling back to a spoofable address. `excludedIPs` only applies
+> when `ipStrategyDepth > 0`.
 
 Or alternatively, use the excludedIPs strategy:
 

@@ -2,12 +2,31 @@ package ipwhitelistshaper_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync/atomic"
 
 	i "github.com/hhftechnology/ipwhitelistshaper"
 )
+
+// postApprove submits a form-encoded approval POST (the new approval transport,
+// where the token arrives via the page's URL fragment and is POSTed by JS).
+func postApprove(handler http.Handler, clientIP, form string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/approve", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if strings.Contains(clientIP, ":") {
+		req.RemoteAddr = fmt.Sprintf("[%s]:1234", clientIP)
+	} else {
+		req.RemoteAddr = fmt.Sprintf("%s:1234", clientIP)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
+}
 
 type StubNotificationService struct {
 	knockCh chan i.IPData
@@ -38,17 +57,17 @@ func getApprovalQueryString(ipData i.IPData) string {
 }
 
 type StubStorageService struct {
-	countStores int
-	countLoads int
+	countStores atomic.Int64
+	countLoads  atomic.Int64
 }
 
 func (s *StubStorageService) Store(whitelistedIPs map[string]i.IPData, pendingApprovals map[string]i.IPData) error {
-	s.countStores += 1
+	s.countStores.Add(1)
 	return nil
 }
 
 func (s *StubStorageService) Load() (map[string]i.IPData, map[string]i.IPData, error) {
-	s.countLoads += 1
+	s.countLoads.Add(1)
 	return nil, nil, nil
 }
 
@@ -58,10 +77,7 @@ func StubNew(ctx context.Context, next http.Handler, config *i.Config, name stri
 		knockCh:   make(chan i.IPData, 1),
 		approveCh: make(chan i.IPData, 1),
 	}
-	storageService := &StubStorageService{
-		countStores: 0,
-		countLoads: 0,
-	}
+	storageService := &StubStorageService{}
 
 	ipWhitelistShaper, err := i.RegisterIPWhitelistShaper(name, config, notificationService, storageService)
 	if err != nil {

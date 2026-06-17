@@ -2,10 +2,11 @@ package ipwhitelistshaper
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 )
+
+const defaultMaxPendingApprovals = 1024
 
 type IPWhitelistShaper struct {
 	name                string
@@ -34,6 +37,9 @@ func NewIPWhitelistShaper(
 	if config.ExpirationTime <= 0 {
 		config.ExpirationTime = 300 // Default if invalid
 	}
+	if config.MaxPendingApprovals <= 0 {
+		config.MaxPendingApprovals = defaultMaxPendingApprovals
+	}
 
 	wordList := []string{
 		"apple", "banana", "cherry", "dog", "elephant", "frog", "giraffe", "house",
@@ -53,7 +59,26 @@ func NewIPWhitelistShaper(
 	}
 	ipwhitelistshaper.loadState()
 
+	logStartupWarnings(name, config)
+
 	return ipwhitelistshaper, nil
+}
+
+// logStartupWarnings surfaces operational risks once per plugin instance.
+func logStartupWarnings(name string, config *Config) {
+	fmt.Printf("[%s] WARNING: verbose DEBUG logging is enabled and includes approval tokens; filter or disable these logs and do not rely on them in production.\n", name)
+	if config.ApprovalURL == "" {
+		fmt.Printf("[%s] WARNING: approvalURL is not set; approval links fall back to the request Host header, which can be spoofed to leak the approval token. Set approvalURL explicitly in production.\n", name)
+	}
+	if config.IPStrategyDepth < 0 {
+		fmt.Printf("[%s] WARNING: ipStrategyDepth is negative (%d); it is treated as 0 and X-Forwarded-For is ignored.\n", name, config.IPStrategyDepth)
+	}
+	if len(config.ExcludedIPs) > 0 && config.IPStrategyDepth <= 0 {
+		fmt.Printf("[%s] WARNING: excludedIPs is configured but ipStrategyDepth is %d; excludedIPs only applies when ipStrategyDepth > 0 and will be ignored.\n", name, config.IPStrategyDepth)
+	}
+	if config.IPStrategyDepth > 0 {
+		fmt.Printf("[%s] INFO ipStrategyDepth is %d; requests whose X-Forwarded-For has fewer than %d (non-excluded) entries are denied. Ensure this matches your trusted proxy count.\n", name, config.IPStrategyDepth, config.IPStrategyDepth)
+	}
 }
 
 func (i *IPWhitelistShaper) getIPKey(ipStr string) string {
@@ -84,14 +109,17 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 	key := i.getIPKey(clientIP)
 	i.mutex.Lock()
 
+	i.evictExpiredLocked()
+
 	if isValid(i.whitelistedIPs, key) {
 		i.mutex.Unlock()
 		http.Redirect(rw, req, "/", http.StatusFound)
 		return
 	}
 
-
-	if pendingIpData, _ := getValid(i.pendingApprovals, clientIP); pendingIpData != nil {
+	// Pending approvals are bucketed by the same key we whitelist (the IPv6
+	// prefix when configured), so a single subnet maps to one pending request.
+	if pendingIpData, _ := getValid(i.pendingApprovals, key); pendingIpData != nil {
 		validationCode := pendingIpData.ValidationCode
 		i.mutex.Unlock()
 		if err := i.saveState(); err != nil {
@@ -101,13 +129,20 @@ func (i *IPWhitelistShaper) handleKnockRequest(rw http.ResponseWriter, req *http
 		return
 	}
 
+	if len(i.pendingApprovals) >= i.config.MaxPendingApprovals {
+		i.mutex.Unlock()
+		fmt.Printf("[%s] WARNING: pending approvals cap (%d) reached; rejecting knock from %s\n", i.name, i.config.MaxPendingApprovals, clientIP)
+		http.Error(rw, "Too many pending approval requests, please try again later", http.StatusServiceUnavailable)
+		return
+	}
+
 	ipData := IPData{
 		IP:             clientIP,
 		ExpiresAt:      time.Now().Add(1 * time.Hour),
 		ValidationID:   i.generateToken(clientIP),
 		ValidationCode: i.getRandomUnusedWord(),
 	}
-	i.pendingApprovals[clientIP] = ipData
+	i.pendingApprovals[key] = ipData
 
 	i.mutex.Unlock() // Unlock before synchronous save
 
@@ -140,7 +175,10 @@ func (i *IPWhitelistShaper) getUnusedWordList() []string {
 		pendingValidationCodes[pendingIpData.ValidationCode] = struct{}{}
 	}
 
-	unusedWordList := make([]string, 0, len(i.wordList) - len(pendingValidationCodes))
+	// Cap on len(wordList) only: pending codes can exceed the word count once the
+	// list is exhausted (the "approval" fallback), which would make a difference
+	// negative and panic in makeslice.
+	unusedWordList := make([]string, 0, len(i.wordList))
 	for _, word := range i.wordList {
 		if _, exists := pendingValidationCodes[word]; !exists {
 			unusedWordList = append(unusedWordList, word)
@@ -152,8 +190,24 @@ func (i *IPWhitelistShaper) getUnusedWordList() []string {
 func (i *IPWhitelistShaper) getRandomUnusedWord() string {
 	unusedWordList := i.getUnusedWordList()
 	if len(unusedWordList) == 0 { return "approval" }
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return unusedWordList[r.Intn(len(unusedWordList))]
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(unusedWordList))))
+	if err != nil { return unusedWordList[0] }
+	return unusedWordList[n.Int64()]
+}
+
+// evictExpiredLocked removes expired entries from both maps. Assumes the write lock is held.
+func (i *IPWhitelistShaper) evictExpiredLocked() {
+	now := time.Now()
+	for k, v := range i.whitelistedIPs {
+		if !now.Before(v.ExpiresAt) {
+			delete(i.whitelistedIPs, k)
+		}
+	}
+	for k, v := range i.pendingApprovals {
+		if !now.Before(v.ExpiresAt) {
+			delete(i.pendingApprovals, k)
+		}
+	}
 }
 
 // serveKnockPage sends the HTML response for the knock endpoint
@@ -162,20 +216,48 @@ func (i *IPWhitelistShaper) serveKnockPage(rw http.ResponseWriter, validationCod
 	serveHtml(rw, html)
 }
 
-// handleApproveRequest processes approval requests
+// handleApproveRequest serves the approval page on GET (the token lives in the
+// URL fragment and never reaches the server) and performs the approval on POST.
 func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *http.Request) {
-	ipEncoded := req.URL.Query().Get("ip")
-	tokenEncoded := req.URL.Query().Get("token")
-	validationCodeEncoded := req.URL.Query().Get("validationCode")
-	expirationStr := req.URL.Query().Get("expiration")
+	if req.Method != http.MethodPost {
+		serveApprovePage(rw)
+		return
+	}
+	if !isSameOrigin(req) {
+		fmt.Printf("[%s] WARNING: rejected cross-origin approval POST (Origin: %q)\n", i.name, req.Header.Get("Origin"))
+		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Cross-origin approval rejected"})
+		return
+	}
+	i.processApproval(rw, req)
+}
 
-	ip, err1 := url.QueryUnescape(ipEncoded)
-	token, err2 := url.QueryUnescape(tokenEncoded)
-	validationCode, err3 := url.QueryUnescape(validationCodeEncoded)
+// isSameOrigin rejects a POST only when an Origin header is present and its host
+// differs from the request host. Clients that omit Origin are allowed — the
+// unguessable token is the real protection; this is defence in depth.
+func isSameOrigin(req *http.Request) bool {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return parsed.Host == req.Host
+}
 
-	if err1 != nil || err2 != nil || err3 != nil || ip == "" || token == "" {
-		fmt.Printf("[%s] ERROR decoding approval parameters or missing params. IP: '%s', Token: '%s', Code: '%s', IP Err: %v, Token Err: %v, Code Err: %v\n", i.name, ip, token, validationCode, err1, err2, err3)
-		http.Error(rw, "Invalid or missing request parameters", http.StatusBadRequest)
+func (i *IPWhitelistShaper) processApproval(rw http.ResponseWriter, req *http.Request) {
+	if err := req.ParseForm(); err != nil {
+		writeApproveJSON(rw, http.StatusBadRequest, approveResult{Status: "error", Message: "Invalid request body"})
+		return
+	}
+	ip := req.PostFormValue("ip")
+	token := req.PostFormValue("token")
+	validationCode := req.PostFormValue("validationCode")
+
+	if ip == "" || token == "" {
+		fmt.Printf("[%s] ERROR missing approval parameters. IP: '%s'\n", i.name, ip)
+		writeApproveJSON(rw, http.StatusBadRequest, approveResult{Status: "error", Message: "Invalid or missing request parameters"})
 		return
 	}
 
@@ -191,63 +273,48 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 		i.whitelistedIPs = whitelistedIPs
 		i.pendingApprovals = pendingApprovals
 	}
-	// Log debugging info
+	i.evictExpiredLocked()
 	fmt.Printf("[%s] DEBUG State loaded in handleApproveRequest for IP %s (Key: %s). Current pending map size: %d. Content samples: %+v\n",
 		i.name, ip, key, len(i.pendingApprovals), maskDebugData(i.pendingApprovals))
 
-	// Check if IP and token match the *now loaded* pending approval data
-	pendingData, exists := i.pendingApprovals[ip]
+	// Pending approvals are bucketed by key (the IPv6 prefix when configured).
+	pendingData, exists := i.pendingApprovals[key]
 	if !exists {
-		// NEW CODE: Check if the IP is already whitelisted
 		if whitelistData, isWhitelisted := i.whitelistedIPs[key]; isWhitelisted {
-			// IP is already approved, show success page but don't send notification again
 			fmt.Printf("[%s] INFO IP %s (Key: %s) is already whitelisted, expires at %s\n",
 				i.name, ip, key, whitelistData.ExpiresAt.Format(time.RFC3339))
-
-			// Calculate remaining time
 			remainingTime := int(time.Until(whitelistData.ExpiresAt).Seconds())
 			if remainingTime < 0 {
 				remainingTime = 0
 			}
-
-			// Show success page with already whitelisted message
-			html := alreadyApprovedPageHtml(ip, remainingTime)
-			serveHtml(rw, html)
+			writeApproveJSON(rw, http.StatusOK, approveResult{Status: "already", IP: ip, ExpiresIn: remainingTime})
 			return
 		}
 
-		// Original error message for IP not found in either list
-		fmt.Printf("[%s] ERROR No pending approval found in current state for IP: %s (Key: %s, Token: %s). Approval attempt failed. Pending map keys: %v\n",
-			i.name, ip, key, token, getMapKeys(i.pendingApprovals))
-		http.Error(rw, "Invalid token or IP address: No pending approval found", http.StatusForbidden)
+		fmt.Printf("[%s] ERROR No pending approval found in current state for IP: %s (Key: %s). Approval attempt failed. Pending map keys: %v\n",
+			i.name, ip, key, getMapKeys(i.pendingApprovals))
+		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "No pending approval found for this address"})
 		return
 	}
 
 	if pendingData.ValidationID != token {
-		fmt.Printf("[%s] ERROR Token mismatch for IP: %s. Expected in state: '%s', Got from URL: '%s'\n", i.name, ip, pendingData.ValidationID, token)
-		http.Error(rw, "Invalid token or IP address: Token mismatch", http.StatusForbidden)
+		fmt.Printf("[%s] ERROR Token mismatch for IP: %s.\n", i.name, ip)
+		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Invalid token"})
 		return
 	}
 
 	if pendingData.ValidationCode != validationCode {
-		fmt.Printf("[%s] ERROR Validation code mismatch for IP: %s. Expected in state: '%s', Got from URL: '%s'\n", i.name, ip, pendingData.ValidationCode, validationCode)
-		http.Error(rw, "Invalid validation code", http.StatusForbidden)
+		fmt.Printf("[%s] ERROR Validation code mismatch for IP: %s.\n", i.name, ip)
+		writeApproveJSON(rw, http.StatusForbidden, approveResult{Status: "error", Message: "Invalid validation code"})
 		return
 	}
 	// --- End Validation Section ---
 
+	// Whitelist duration is server-controlled; never trust a client-supplied value.
 	expirationTime := i.config.ExpirationTime
-	if expirationStr != "" {
-		_, err := fmt.Sscanf(expirationStr, "%d", &expirationTime)
-		if err != nil || expirationTime <= 0 {
-			expirationTime = i.config.ExpirationTime
-		}
-	}
-
-	expiresAt := time.Now().Add(time.Duration(expirationTime) * time.Second)
 	ipData := IPData{
 		IP:             ip,
-		ExpiresAt:      expiresAt,
+		ExpiresAt:      time.Now().Add(time.Duration(expirationTime) * time.Second),
 		ValidationID:   token,
 		ValidationCode: pendingData.ValidationCode,
 	}
@@ -271,9 +338,7 @@ func (i *IPWhitelistShaper) handleApproveRequest(rw http.ResponseWriter, req *ht
 	fmt.Printf("[%s] INFO Approved IP: %s, expiration: %d seconds\n", i.name, ip, expirationTime)
 	go i.notificationService.SendApproveConfirmNotification(ipData)
 
-	// Return success message
-	html := approvedPageHtml(ip, expirationTime)
-	serveHtml(rw, html)
+	writeApproveJSON(rw, http.StatusOK, approveResult{Status: "approved", IP: ip, ExpiresIn: expirationTime})
 }
 
 // saveState acquires lock and calls saveStateToFile

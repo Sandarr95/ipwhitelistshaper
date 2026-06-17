@@ -233,7 +233,7 @@ func (t TelegramNotificationService) SendKnockNotification(approvalURLBase strin
 }
 
 func approvalLink(approvalURLBase string, expirationTime int, ipData IPData) string {
-	return fmt.Sprintf("%s/approve?ip=%s&token=%s&validationCode=%s&expiration=%d",
+	return fmt.Sprintf("%s/approve#ip=%s&token=%s&validationCode=%s&expiration=%d",
 		approvalURLBase, url.QueryEscape(ipData.IP), url.QueryEscape(ipData.ValidationID),
 		url.QueryEscape(ipData.ValidationCode), expirationTime)
 }
