@@ -341,10 +341,13 @@ func (i *IPWhitelistShaper) processApproval(rw http.ResponseWriter, req *http.Re
 	writeApproveJSON(rw, http.StatusOK, approveResult{Status: "approved", IP: ip, ExpiresIn: expirationTime})
 }
 
-// saveState acquires lock and calls saveStateToFile
+// saveState evicts expired entries and persists the live state. Takes the write
+// lock (eviction mutates) so the persisted state never accumulates stale entries
+// across restarts/reloads, even when no knock or approval triggers cleanup.
 func (i *IPWhitelistShaper) saveState() error {
-	i.mutex.RLock()
-	defer i.mutex.RUnlock()
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.evictExpiredLocked()
 	return i.storageService.Store(i.whitelistedIPs, i.pendingApprovals)
 }
 
@@ -361,5 +364,8 @@ func (i *IPWhitelistShaper) loadState() error {
 		i.whitelistedIPs = whitelistedIPs
 		i.pendingApprovals = pendingApprovals
 	}
+	// Drop anything that expired while the state sat on disk, so a stale
+	// state.json doesn't repopulate the maps with long-dead entries.
+	i.evictExpiredLocked()
 	return nil
 }

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,5 +217,148 @@ func TestFileStorageCorruptRecovery(t *testing.T) {
 	}
 	if len(whitelisted) != 0 || len(pending) != 0 {
 		t.Errorf("expected empty maps after corrupt recovery, got %d/%d", len(whitelisted), len(pending))
+	}
+}
+
+type noopNotifier struct{}
+
+func (noopNotifier) SendKnockNotification(string, IPData) {}
+func (noopNotifier) SendApproveConfirmNotification(IPData) {}
+
+// TestLoadStateEvictsExpiredEntries: a stale state.json must not repopulate the
+// in-memory maps with long-expired entries on startup.
+func TestLoadStateEvictsExpiredEntries(t *testing.T) {
+	dir := t.TempDir()
+	storage := &FileStorageService{name: "load-evict", storagePath: dir}
+	expired := time.Now().Add(-720 * time.Hour) // ~30 days ago
+	if err := storage.Store(
+		map[string]IPData{"203.0.113.99": {IP: "203.0.113.99", ExpiresAt: expired}},
+		map[string]IPData{"203.0.113.98": {IP: "203.0.113.98", ExpiresAt: expired}},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	shaper, err := NewIPWhitelistShaper("load-evict", CreateConfig(), noopNotifier{}, storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	shaper.mutex.RLock()
+	defer shaper.mutex.RUnlock()
+	if len(shaper.whitelistedIPs) != 0 {
+		t.Errorf("expected expired whitelisted entries evicted on load, still have %d", len(shaper.whitelistedIPs))
+	}
+	if len(shaper.pendingApprovals) != 0 {
+		t.Errorf("expected expired pending entries evicted on load, still have %d", len(shaper.pendingApprovals))
+	}
+}
+
+// TestSaveStateEvictsExpiredEntries: saving (e.g. on Close / Traefik reload) must
+// not re-persist entries that have expired in memory — otherwise they survive
+// every reload forever.
+func TestSaveStateEvictsExpiredEntries(t *testing.T) {
+	dir := t.TempDir()
+	storage := &FileStorageService{name: "save-evict", storagePath: dir}
+	shaper, err := NewIPWhitelistShaper("save-evict", CreateConfig(), noopNotifier{}, storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expired := time.Now().Add(-720 * time.Hour)
+	shaper.mutex.Lock()
+	shaper.whitelistedIPs["203.0.113.99"] = IPData{IP: "203.0.113.99", ExpiresAt: expired}
+	shaper.mutex.Unlock()
+
+	if err := shaper.saveState(); err != nil {
+		t.Fatal(err)
+	}
+
+	wl, _, _ := storage.Load()
+	if _, ok := wl["203.0.113.99"]; ok {
+		t.Error("saveState re-persisted an expired entry (it would survive every reload)")
+	}
+}
+
+// TestKnockEvictsExpiredEntries: a knock from an unrelated IP cleans previously
+// expired entries from the persisted state.
+func TestKnockEvictsExpiredEntries(t *testing.T) {
+	dir := t.TempDir()
+	storage := &FileStorageService{name: "knock-evict", storagePath: dir}
+	config := CreateConfig()
+	config.DefaultPrivateClassSources = false
+	shaper, err := NewIPWhitelistShaper("knock-evict", config, noopNotifier{}, storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expired := time.Now().Add(-720 * time.Hour)
+	shaper.mutex.Lock()
+	shaper.whitelistedIPs["203.0.113.99"] = IPData{IP: "203.0.113.99", ExpiresAt: expired}
+	shaper.pendingApprovals["203.0.113.98"] = IPData{IP: "203.0.113.98", ExpiresAt: expired}
+	shaper.mutex.Unlock()
+
+	req := httptest.NewRequest("GET", "http://localhost/knock-knock", nil)
+	shaper.handleKnockRequest(httptest.NewRecorder(), req, "198.51.100.7")
+
+	wl, pend, _ := storage.Load()
+	if _, ok := wl["203.0.113.99"]; ok {
+		t.Error("expired whitelisted entry still on disk after a knock")
+	}
+	if _, ok := pend["203.0.113.98"]; ok {
+		t.Error("expired pending entry still on disk after a knock")
+	}
+}
+
+// TestKnockAndApproveCleanStaleStateFile reproduces the production scenario end
+// to end: a stale state.json on disk, then a knock + approve through the
+// handler, and asserts the file no longer carries the months-old entries.
+func TestKnockAndApproveCleanStaleStateFile(t *testing.T) {
+	dir := t.TempDir()
+	storage := &FileStorageService{name: "e2e", storagePath: dir}
+	old := time.Now().Add(-720 * time.Hour)
+	if err := storage.Store(
+		map[string]IPData{"203.0.113.99": {IP: "203.0.113.99", ExpiresAt: old, ValidationID: "old", ValidationCode: "apple"}},
+		map[string]IPData{"203.0.113.98": {IP: "203.0.113.98", ExpiresAt: old, ValidationID: "oldp", ValidationCode: "banana"}},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	config := CreateConfig()
+	config.DefaultPrivateClassSources = false
+	shaper, err := NewIPWhitelistShaper("e2e", config, noopNotifier{}, storage)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientIP := "198.51.100.7"
+
+	// Knock.
+	shaper.handleKnockRequest(httptest.NewRecorder(), httptest.NewRequest("GET", "http://localhost/knock-knock", nil), clientIP)
+
+	shaper.mutex.RLock()
+	pending := shaper.pendingApprovals[clientIP]
+	shaper.mutex.RUnlock()
+	if pending.ValidationID == "" {
+		t.Fatal("expected a pending approval after the knock")
+	}
+
+	// Approve (POST, as the approval page does).
+	form := url.Values{}
+	form.Set("ip", clientIP)
+	form.Set("token", pending.ValidationID)
+	form.Set("validationCode", pending.ValidationCode)
+	approveReq := httptest.NewRequest("POST", "http://localhost/approve", strings.NewReader(form.Encode()))
+	approveReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	shaper.handleApproveRequest(httptest.NewRecorder(), approveReq)
+
+	wl, pend, _ := storage.Load()
+	if _, ok := wl["203.0.113.99"]; ok {
+		t.Error("stale whitelisted entry still in state file after knock+approve")
+	}
+	if _, ok := pend["203.0.113.98"]; ok {
+		t.Error("stale pending entry still in state file after knock+approve")
+	}
+	if _, ok := wl[clientIP]; !ok {
+		t.Error("expected the approved IP to be whitelisted on disk")
 	}
 }
