@@ -8,7 +8,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"testing"
+	"time"
 
 	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
@@ -28,23 +31,88 @@ func postApprove(handler http.Handler, clientIP, form string) *httptest.Response
 	return recorder
 }
 
-type StubNotificationService struct {
-	knockCh chan i.IPData
-	approveCh chan i.IPData
+// postApproveWithOrigin is postApprove with an Origin header, for same-origin checks.
+func postApproveWithOrigin(handler http.Handler, clientIP, form, origin string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/approve", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", origin)
+	req.RemoteAddr = clientIP + ":1234"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	return recorder
 }
 
-func (s *StubNotificationService) SendKnockNotification(approvalURLBase string, ipData i.IPData) {
-	select {
-	case s.knockCh <- ipData:
-	default:
-	}
+// StubNotificationService records the most recent notification of each type
+// behind a mutex (no channels/select, no pointers to imported types), so the
+// suite is interpretable by yaegi while staying safe under the -race detector.
+type StubNotificationService struct {
+	mu         sync.Mutex
+	knock      i.IPData
+	approve    i.IPData
+	hasKnock   bool
+	hasApprove bool
+}
+
+func (s *StubNotificationService) SendKnockNotification(_ string, ipData i.IPData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.knock = ipData
+	s.hasKnock = true
 }
 
 func (s *StubNotificationService) SendApproveConfirmNotification(ipData i.IPData) {
-	select {
-	case s.approveCh <- ipData:
-	default:
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.approve = ipData
+	s.hasApprove = true
+}
+
+// waitKnock polls for a knock notification (sent from a goroutine), consuming
+// and returning it, or fails after ~1s.
+func (s *StubNotificationService) waitKnock(t *testing.T) i.IPData {
+	t.Helper()
+	for n := 0; n < 100; n++ {
+		s.mu.Lock()
+		if s.hasKnock {
+			v := s.knock
+			s.hasKnock = false
+			s.mu.Unlock()
+			return v
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
 	}
+	t.Fatal("knock notification was never sent")
+	return i.IPData{}
+}
+
+// waitApprove is the approval-notification counterpart of waitKnock.
+func (s *StubNotificationService) waitApprove(t *testing.T) i.IPData {
+	t.Helper()
+	for n := 0; n < 100; n++ {
+		s.mu.Lock()
+		if s.hasApprove {
+			v := s.approve
+			s.hasApprove = false
+			s.mu.Unlock()
+			return v
+		}
+		s.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("approve notification was never sent")
+	return i.IPData{}
+}
+
+// knockSent reports whether a knock notification arrived within a short window,
+// consuming it; used for negative assertions.
+func (s *StubNotificationService) knockSent() bool {
+	time.Sleep(100 * time.Millisecond)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	had := s.hasKnock
+	s.hasKnock = false
+	return had
 }
 
 func getApprovalQueryString(ipData i.IPData) string {
@@ -73,10 +141,7 @@ func (s *StubStorageService) Load() (map[string]i.IPData, map[string]i.IPData, e
 
 func StubNew(ctx context.Context, next http.Handler, config *i.Config, name string) (http.Handler, *StubNotificationService, *StubStorageService, error) {
 	_, cancel := context.WithCancel(ctx)
-	notificationService := &StubNotificationService{
-		knockCh:   make(chan i.IPData, 1),
-		approveCh: make(chan i.IPData, 1),
-	}
+	notificationService := &StubNotificationService{}
 	storageService := &StubStorageService{}
 
 	ipWhitelistShaper, err := i.RegisterIPWhitelistShaper(name, config, notificationService, storageService)

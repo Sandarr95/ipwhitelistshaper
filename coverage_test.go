@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -29,21 +28,12 @@ func knockAndApprove(t *testing.T, handler http.Handler, notif *StubNotification
 		t.Fatalf("knock: expected 200, got %d", rec.Code)
 	}
 
-	var knock i.IPData
-	select {
-	case knock = <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	knock := notif.waitKnock(t)
 
 	if rec := postApprove(handler, clientIP, getApprovalQueryString(knock)); rec.Code != http.StatusOK {
 		t.Fatalf("approve: expected 200, got %d", rec.Code)
 	}
-	select {
-	case <-notif.approveCh:
-	case <-time.After(time.Second):
-		t.Fatal("approve notification was never sent")
-	}
+	notif.waitApprove(t)
 }
 
 func TestWhitelistExpiration(t *testing.T) {
@@ -85,12 +75,7 @@ func TestApproveRejectsWrongValidationCode(t *testing.T) {
 	}
 
 	testRequest("/knock-knock", handler, clientIP)
-	var knock i.IPData
-	select {
-	case knock = <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	knock := notif.waitKnock(t)
 
 	params := url.Values{}
 	params.Add("ip", knock.IP)
@@ -120,12 +105,7 @@ func TestApproveGetDoesNotApprove(t *testing.T) {
 	}
 
 	testRequest("/knock-knock", handler, clientIP)
-	var knock i.IPData
-	select {
-	case knock = <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	knock := notif.waitKnock(t)
 
 	// Even with valid params in the query, a GET serves the page and approves nothing.
 	getRec := testRequest("/approve?"+getApprovalQueryString(knock), handler, clientIP)
@@ -153,25 +133,12 @@ func TestApproveRejectsCrossOriginPost(t *testing.T) {
 	}
 
 	testRequest("/knock-knock", handler, clientIP)
-	var knock i.IPData
-	select {
-	case knock = <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	knock := notif.waitKnock(t)
 
-	postWithOrigin := func(origin string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "http://localhost/approve", strings.NewReader(getApprovalQueryString(knock)))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("Origin", origin)
-		req.RemoteAddr = clientIP + ":1234"
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		return rec
-	}
+	form := getApprovalQueryString(knock)
 
 	// Cross-origin POST is rejected and approves nothing.
-	if rec := postWithOrigin("https://evil.example.com"); rec.Code != http.StatusForbidden {
+	if rec := postApproveWithOrigin(handler, clientIP, form, "https://evil.example.com"); rec.Code != http.StatusForbidden {
 		t.Errorf("cross-origin POST: expected 403, got %d", rec.Code)
 	}
 	if rec := testRequest("/", handler, clientIP); rec.Code != http.StatusForbidden {
@@ -179,9 +146,21 @@ func TestApproveRejectsCrossOriginPost(t *testing.T) {
 	}
 
 	// Same-origin POST (Origin host matches request host) still approves.
-	if rec := postWithOrigin("http://localhost"); rec.Code != http.StatusOK {
+	if rec := postApproveWithOrigin(handler, clientIP, form, "http://localhost"); rec.Code != http.StatusOK {
 		t.Errorf("same-origin POST: expected 200, got %d", rec.Code)
 	}
+}
+
+// probeApprove POSTs an approval with a deliberately invalid token and returns
+// the response status and body (kept a package function rather than a closure
+// so the suite stays interpretable by yaegi).
+func probeApprove(handler http.Handler, ip string) (int, string) {
+	params := url.Values{}
+	params.Add("ip", ip)
+	params.Add("token", "garbage-token")
+	params.Add("validationCode", "garbage-code")
+	rec := postApprove(handler, ip, params.Encode())
+	return rec.Code, rec.Body.String()
 }
 
 // TestApproveDoesNotLeakState: probing /approve with an invalid token must
@@ -203,26 +182,13 @@ func TestApproveDoesNotLeakState(t *testing.T) {
 
 	pendingIP := "203.0.113.62"
 	testRequest("/knock-knock", handler, pendingIP)
-	select {
-	case <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	notif.waitKnock(t)
 
 	unknownIP := "203.0.113.63"
 
-	probe := func(ip string) (int, string) {
-		params := url.Values{}
-		params.Add("ip", ip)
-		params.Add("token", "garbage-token")
-		params.Add("validationCode", "garbage-code")
-		rec := postApprove(handler, ip, params.Encode())
-		return rec.Code, rec.Body.String()
-	}
-
-	codeW, bodyW := probe(whitelistedIP)
-	codeP, bodyP := probe(pendingIP)
-	codeU, bodyU := probe(unknownIP)
+	codeW, bodyW := probeApprove(handler, whitelistedIP)
+	codeP, bodyP := probeApprove(handler, pendingIP)
+	codeU, bodyU := probeApprove(handler, unknownIP)
 
 	if codeW != codeP || codeP != codeU {
 		t.Errorf("status codes leak state: whitelisted=%d pending=%d unknown=%d", codeW, codeP, codeU)
@@ -249,12 +215,7 @@ func TestApproveIgnoresClientSuppliedExpiration(t *testing.T) {
 	}
 
 	testRequest("/knock-knock", handler, clientIP)
-	var knock i.IPData
-	select {
-	case knock = <-notif.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("knock notification was never sent")
-	}
+	knock := notif.waitKnock(t)
 
 	params := url.Values{}
 	params.Add("ip", knock.IP)
@@ -353,11 +314,7 @@ func TestConcurrentAccess(t *testing.T) {
 			ip := fmt.Sprintf("203.0.113.%d", n+1)
 			testRequest("/", handler, ip)          // read path (denied)
 			testRequest("/knock-knock", handler, ip) // write path
-			select {
-			case <-notif.knockCh: // drain so the buffered channel never blocks senders
-			default:
-			}
-			testRequest("/", handler, approvedIP) // read path (allowed)
+			testRequest("/", handler, approvedIP)    // read path (allowed)
 		}(n)
 	}
 	wg.Wait()

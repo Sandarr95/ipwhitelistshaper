@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
@@ -49,12 +48,7 @@ func TestIPv6PrefixWhitelist(t *testing.T) {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, knockRec.Code)
 	}
 
-	var lastKnock i.IPData
-	select {
-	case lastKnock = <-notification.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("Knock notification was never sent")
-	}
+	lastKnock := notification.waitKnock(t)
 	if lastKnock.IP != clientIP1 {
 		t.Errorf("Expected last knock from IP: %q, got %q", clientIP1, lastKnock.IP)
 	}
@@ -66,11 +60,7 @@ func TestIPv6PrefixWhitelist(t *testing.T) {
 	}
 
 	// Wait for approve notification
-	select {
-	case <-notification.approveCh:
-	case <-time.After(time.Second):
-		t.Fatal("Approve notification was never sent")
-	}
+	notification.waitApprove(t)
 
 	// Test 4: clientIP1 is now allowed
 	rec1 := testRequest("/", handler, clientIP1)
@@ -110,20 +100,11 @@ func TestIPv4WithIPv6Config(t *testing.T) {
 
 	// Knock IP1
 	testRequest("/knock-knock", handler, clientIP1)
-	var lastKnock i.IPData
-	select {
-	case lastKnock = <-notification.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("Knock notification was never sent")
-	}
+	lastKnock := notification.waitKnock(t)
 
 	// Approve IP1
 	postApprove(handler, clientIP1, getApprovalQueryString(lastKnock))
-	select {
-	case <-notification.approveCh:
-	case <-time.After(time.Second):
-		t.Fatal("Approve notification was never sent")
-	}
+	notification.waitApprove(t)
 
 	// IP1 Allowed
 	if testRequest("/", handler, clientIP1).Code != http.StatusAccepted {
@@ -160,12 +141,7 @@ func TestIPv6PrefixSharedPendingPerSubnet(t *testing.T) {
 	if rec1.Code != http.StatusOK {
 		t.Fatalf("Expected 200, got %d", rec1.Code)
 	}
-	var knock1 i.IPData
-	select {
-	case knock1 = <-notification.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("Knock 1 notification not received")
-	}
+	knock1 := notification.waitKnock(t)
 
 	// 2. Client 2 (same /64) joins the existing pending request.
 	rec2 := testRequest("/knock-knock", handler, clientIP2)
@@ -180,19 +156,13 @@ func TestIPv6PrefixSharedPendingPerSubnet(t *testing.T) {
 	}
 
 	// No second notification should be sent for the same subnet.
-	select {
-	case extra := <-notification.knockCh:
-		t.Errorf("Unexpected second notification for same subnet: %+v", extra)
-	case <-time.After(100 * time.Millisecond):
+	if notification.knockSent() {
+		t.Errorf("Unexpected second notification for same subnet")
 	}
 
 	// 3. Admin approves the subnet (via client 1).
 	postApprove(handler, clientIP1, getApprovalQueryString(knock1))
-	select {
-	case <-notification.approveCh:
-	case <-time.After(time.Second):
-		t.Fatal("Approve notification not received")
-	}
+	notification.waitApprove(t)
 
 	// 4. Both clients in the subnet are now allowed.
 	if testRequest("/", handler, clientIP1).Code != http.StatusAccepted {

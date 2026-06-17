@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
@@ -81,12 +80,7 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 	if knockRec.Header().Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Errorf("Expected Content-Type %q, got %q", "text/html; charset=utf-8", knockRec.Header().Get("Content-Type"))
 	}
-	var lastKnock i.IPData
-	select {
-	case lastKnock = <-notificationA_1.knockCh:
-	case <-time.After(time.Second):
-		t.Fatal("Knock notification was never sent")
-	}
+	lastKnock := notificationA_1.waitKnock(t)
 	if lastKnock.IP != clientIP {
 		t.Errorf("Expected last knock from IP: %q, got %q", clientIP, lastKnock.IP)
 	}
@@ -113,12 +107,7 @@ func TestIPWhitelistShaperHandler(t *testing.T) {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, approveRec.Code)
 	}
 
-	var lastApprove i.IPData
-	select {
-	case lastApprove = <-notificationA_1.approveCh:
-	case <-time.After(time.Second):
-		t.Fatal("Approve notification was never sent")
-	}
+	lastApprove := notificationA_1.waitApprove(t)
 	if lastApprove.IP != clientIP {
 		t.Errorf("Expected last approve for IP: %q, got %q", clientIP, lastApprove.IP)
 	}
