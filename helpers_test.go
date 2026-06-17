@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	i "github.com/hhftechnology/ipwhitelistshaper"
+	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
 
 // postApprove submits a form-encoded approval POST (the new approval transport,

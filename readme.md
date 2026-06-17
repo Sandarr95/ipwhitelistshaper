@@ -1,23 +1,12 @@
 <div align="center" width="100%">
     <h1>Traefik IP Whitelist Shaper</h1>
     <img width="auto" src="assets/banner.png">
-    <a target="_blank" href="https://GitHub.com/hhftechnology/ipwhitelistshaper/graphs/contributors/"><img src="https://img.shields.io/github/contributors/hhftechnology/ipwhitelistshaper.svg" /></a><br>
-    <a target="_blank" href="https://GitHub.com/hhftechnology/ipwhitelistshaper/commits/"><img src="https://img.shields.io/github/last-commit/hhftechnology/ipwhitelistshaper.svg" /></a>
-    <a target="_blank" href="https://GitHub.com/hhftechnology/ipwhitelistshaper/issues/"><img src="https://img.shields.io/github/issues/hhftechnology/ipwhitelistshaper.svg" /></a>
-    <a target="_blank" href="https://github.com/hhftechnology/ipwhitelistshaper/issues?q=is%3Aissue+is%3Aclosed"><img src="https://img.shields.io/github/issues-closed/hhftechnology/ipwhitelistshaper.svg" /></a><br>
-        <a target="_blank" href="https://github.com/hhftechnology/ipwhitelistshaper/stargazers"><img src="https://img.shields.io/github/stars/hhftechnology/ipwhitelistshaper.svg?style=social&label=Star" /></a>
-    <a target="_blank" href="https://github.com/hhftechnology/ipwhitelistshaper/network/members"><img src="https://img.shields.io/github/forks/hhftechnology/ipwhitelistshaper.svg?style=social&label=Fork" /></a>
-    <a target="_blank" href="https://github.com/hhftechnology/ipwhitelistshaper/watchers"><img src="https://img.shields.io/github/watchers/hhftechnology/ipwhitelistshaper.svg?style=social&label=Watch" /></a><br>
+    <p>A Traefik middleware plugin for dynamic IP whitelisting with an administrator approval flow.</p>
 </div>
 
-<div align="center" width="100%">
-    <p>A Traefik middleware plugin for dynamic IP whitelisting with administrator approval flow</p>
-    <a target="_blank" href="https://github.com/hhftechnology/ipwhitelistshaper"><img src="https://img.shields.io/badge/maintainer-hhftechnology-orange" /></a>
-</div>
-
-## 📝 Forums
-
-[See the forums for further discussion here](https://forum.hhf.technology/)
+> **This is a fork** of [hhftechnology/ipwhitelistshaper](https://github.com/hhftechnology/ipwhitelistshaper),
+> which builds on the idea of [l4rm4nd/TraefikShaper](https://github.com/l4rm4nd/TraefikShaper).
+> Licensed under Apache-2.0 — see [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), and [Credits](#credits).
 
 ## How It Works
 
@@ -55,9 +44,13 @@ Enable the plugin in your Traefik static configuration:
 experimental:
   plugins:
     ipwhitelistshaper:
-      moduleName: github.com/hhftechnology/ipwhitelistshaper
-      version: v1.0.3
+      moduleName: codeberg.org/Sandarr95/ipwhitelistshaper
+      version: v0.1.0
 ```
+
+> **Note:** This fork lives on Codeberg and is not in Traefik's Plugin Catalog,
+> so the catalog form above won't resolve it. Install it as a local (vendored)
+> plugin instead — see the local-plugin and Docker examples further down.
 
 ### Dynamic Configuration
 
@@ -107,7 +100,6 @@ http:
           # File-based storage configuration
           storageEnabled: true
           storagePath: "/plugins-storage/ipwhitelistshaper"
-          saveInterval: 30  # Save every 30 seconds
 ```
 
 ## File-Based Storage
@@ -116,10 +108,10 @@ This plugin now includes a file-based storage system to maintain state across Tr
 
 ### How File Storage Works
 
-1. **Persistent State**: The plugin periodically saves its state to disk, including:
+1. **Persistent State**: The plugin saves its state to disk whenever it changes
+   (on a new knock or an approval) and evicts expired entries, including:
    - Currently whitelisted IPs and their expiration times
    - Pending approval requests and their tokens
-   - Last request times for rate limiting
 
 2. **Automatic Recovery**: When the plugin starts, it automatically loads the previously saved state from disk
 
@@ -131,7 +123,8 @@ You can configure the storage system with these parameters:
 
 - `storageEnabled`: Enable or disable file-based storage (default: true)
 - `storagePath`: Directory where state files will be stored (default: "/plugins-storage/ipwhitelistshaper")
-- `saveInterval`: How often to save state to disk in seconds (default: 30)
+
+The state file is written atomically with `0600` permissions (it holds approval tokens) on every change; there is no periodic save.
 
 ### Volume Mounting
 
@@ -272,7 +265,7 @@ ipwhitelistshaper:
     config:
       ipwhitelistshaper:
         knockEndpoint: "/knock-knock"
-        approvalURL: "https://wallos.development.hhf.technology"
+        approvalURL: "https://service.example.com"
         notificationURL: "https://discord.com/api/webhooks/"
         defaultPrivateClassSources: true
         ipv6PrefixLength: 0
@@ -286,7 +279,6 @@ ipwhitelistshaper:
           - "10.0.0.0/8"
         storageEnabled: true
         storagePath: "/plugins-storage/ipwhitelistshaper"
-        saveInterval: 30
 ```
 ```yaml
 providers:
@@ -304,7 +296,7 @@ experimental:
       version: "v1.1.0"
   localPlugins:
     ipwhitelistshaper:
-      moduleName: "github.com/hhftechnology/ipwhitelistshaper"
+      moduleName: "codeberg.org/Sandarr95/ipwhitelistshaper"
 ```
 ```yaml
   traefik:
@@ -356,8 +348,21 @@ If state is not being properly maintained:
 1. Check if the storage directory exists and has correct permissions
 2. Look for errors related to file operations in the Traefik logs
 3. Verify that the storage volume is properly mounted if using Docker
-4. Try increasing the `saveInterval` to reduce disk operations
+4. Ensure the storage volume is writable by Traefik and shared across all instances
+
+## Credits
+
+This project is a fork of
+[hhftechnology/ipwhitelistshaper](https://github.com/hhftechnology/ipwhitelistshaper).
+It builds on the original idea by
+[l4rm4nd/TraefikShaper](https://github.com/l4rm4nd/TraefikShaper), and parts of
+the project scaffolding come from the
+[Traefik plugin template](https://github.com/traefik/plugindemo)
+(Copyright 2020 Containous SAS / Traefik Labs).
+
+See [`NOTICE`](NOTICE) for the full attribution.
 
 ## License
 
-```
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE) for the
+full text. Modifications in this fork are recorded in the commit history.

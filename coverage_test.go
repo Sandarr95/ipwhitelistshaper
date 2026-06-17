@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	i "github.com/hhftechnology/ipwhitelistshaper"
+	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
 
 func acceptingRoute() http.Handler {

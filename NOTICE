@@ -1,0 +1,18 @@
+IP Whitelist Shaper
+
+This product is a fork of:
+  ipwhitelistshaper
+  Copyright hhftechnology
+  https://github.com/hhftechnology/ipwhitelistshaper
+
+which builds on the idea of:
+  TraefikShaper
+  Copyright l4rm4nd
+  https://github.com/l4rm4nd/TraefikShaper
+
+Portions are derived from the Traefik plugin template:
+  Copyright 2020 Containous SAS
+  Copyright 2020 Traefik Labs
+  https://github.com/traefik/plugindemo
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.

@@ -1,4 +1,4 @@
-module github.com/hhftechnology/ipwhitelistshaper
+module codeberg.org/Sandarr95/ipwhitelistshaper
 
 go 1.19
 

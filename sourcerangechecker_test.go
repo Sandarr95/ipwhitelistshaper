@@ -3,7 +3,7 @@ package ipwhitelistshaper_test
 import (
 	"testing"
 
-	"github.com/hhftechnology/ipwhitelistshaper"
+	"codeberg.org/Sandarr95/ipwhitelistshaper"
 )
 
 func TestSourceRangeChecker(t *testing.T) {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	i "github.com/hhftechnology/ipwhitelistshaper"
+	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
 
 func testRequest(uri string, handler http.Handler, clientIP string) *httptest.ResponseRecorder {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	i "github.com/hhftechnology/ipwhitelistshaper"
+	i "codeberg.org/Sandarr95/ipwhitelistshaper"
 )
 
 func TestIPv6PrefixWhitelist(t *testing.T) {
