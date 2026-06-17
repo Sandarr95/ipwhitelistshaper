@@ -56,20 +56,21 @@ type approveResult struct {
 func approvePageHtml() string {
 	content := `
 		<div class="container">
-			<h1>Approving&hellip;</h1>
+			<h1 id="title">Approving&hellip;</h1>
 			<p id="status">Validating your approval request&hellip;</p>
 			<noscript><p>JavaScript is required to approve access requests.</p></noscript>
 		</div>
 		<script>
 		(function () {
+			var titleEl = document.getElementById('title');
 			var statusEl = document.getElementById('status');
-			function show(msg) { statusEl.textContent = msg; }
+			function show(title, msg) { titleEl.textContent = title; statusEl.textContent = msg; }
 			var params = new URLSearchParams(location.hash.replace(/^#!?/, ''));
 			var ip = params.get('ip');
 			var token = params.get('token');
 			history.replaceState(null, '', location.pathname);
 			if (!ip || !token) {
-				show('Nothing to approve — this link is missing its approval data or has already been used.');
+				show('Nothing to approve', 'This link is missing its approval data or has already been used.');
 				return;
 			}
 			var body = new URLSearchParams();
@@ -84,14 +85,14 @@ func approvePageHtml() string {
 				return resp.json();
 			}).then(function (d) {
 				if (d.status === 'approved') {
-					show('Access approved for ' + d.ip + '. It will expire in ' + d.expiresIn + ' seconds.');
+					show('Access approved', 'Access approved for ' + d.ip + '. It will expire in ' + d.expiresIn + ' seconds.');
 				} else if (d.status === 'already') {
-					show(d.ip + ' is already whitelisted (expires in ' + d.expiresIn + ' seconds).');
+					show('Already approved', d.ip + ' is already whitelisted (expires in ' + d.expiresIn + ' seconds).');
 				} else {
-					show('Approval failed: ' + (d.message || 'unknown error') + '.');
+					show('Approval failed', (d.message || 'Unknown error') + '.');
 				}
 			}).catch(function () {
-				show('Approval failed: could not reach the server.');
+				show('Approval failed', 'Could not reach the server.');
 			});
 		})();
 		</script>
