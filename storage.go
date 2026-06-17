@@ -52,15 +52,24 @@ func (s FileStorageService) Store(whitelistedIPs map[string]IPData, pendingAppro
 		return fmt.Errorf("failed to create temporary state file: %v", err)
 	}
 	tempFilename := tempFile.Name()
-	err = os.WriteFile(tempFilename, data, 0644)
-	if err != nil {
+
+	// State contains approval tokens; keep it readable only by the owner.
+	if _, err := tempFile.Write(data); err != nil {
+		tempFile.Close()
 		os.Remove(tempFilename)
 		return fmt.Errorf("failed to write temporary state file: %v", err)
 	}
+	if err := tempFile.Close(); err != nil {
+		os.Remove(tempFilename)
+		return fmt.Errorf("failed to close temporary state file: %v", err)
+	}
+	if err := os.Chmod(tempFilename, 0600); err != nil {
+		os.Remove(tempFilename)
+		return fmt.Errorf("failed to set permissions on temporary state file: %v", err)
+	}
 
 	stateFile := filepath.Join(s.storagePath, "state.json")
-	err = os.Rename(tempFilename, stateFile)
-	if err != nil {
+	if err := os.Rename(tempFilename, stateFile); err != nil {
 		os.Remove(tempFilename)
 		return fmt.Errorf("failed to rename temporary state file to %s: %v", stateFile, err)
 	}

@@ -1,9 +1,9 @@
 package ipwhitelistshaper
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -11,41 +11,49 @@ import (
 )
 
 func generateRandomKey() string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	bytes := make([]byte, 32)
-	_, err := r.Read(bytes)
-	if err != nil { for i := range bytes { bytes[i] = byte(r.Intn(256)) } }
+	if _, err := rand.Read(bytes); err != nil {
+		// crypto/rand only fails when the OS has no usable entropy source.
+		// Failing closed is safer than handing out a predictable secret key.
+		panic(fmt.Sprintf("ipwhitelistshaper: could not read from crypto/rand: %v", err))
+	}
 	return hex.EncodeToString(bytes)
 }
 
 func getClientIP(req *http.Request, depth int, excludedIPChecker *SourceRangeChecker) string {
 	remoteIP, _, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil { remoteIP = req.RemoteAddr }
-	if depth > 0 {
-		xff := req.Header.Get("X-Forwarded-For")
-		if xff != "" {
-			ips := strings.Split(xff, ",")
-			processedIPs := make([]string, 0, len(ips))
-			for _, ipStr := range ips {
-				trimmedIP := strings.TrimSpace(ipStr)
-				if excludedIPChecker.Contains(trimmedIP) { continue; }
-				processedIPs = append(processedIPs, trimmedIP)
-			}
-			if len(processedIPs) >= depth {
-				targetIndex := len(processedIPs) - depth;
-				return processedIPs[targetIndex]
-			} else if len(processedIPs) > 0 {
-				return processedIPs[0]
-			}
-		}
+	if depth <= 0 {
+		return remoteIP
 	}
-	return remoteIP
+	// depth > 0: a trusted proxy chain is expected. Derive the client IP from
+	// X-Forwarded-For and fail closed (return "") when the chain is shorter than
+	// depth, matching Traefik's IPStrategy rather than trusting a spoofable entry.
+	xff := req.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return ""
+	}
+	processedIPs := make([]string, 0)
+	for _, ipStr := range strings.Split(xff, ",") {
+		trimmedIP := strings.TrimSpace(ipStr)
+		if excludedIPChecker.Contains(trimmedIP) { continue }
+		processedIPs = append(processedIPs, trimmedIP)
+	}
+	if len(processedIPs) < depth {
+		return ""
+	}
+	return processedIPs[len(processedIPs)-depth]
 }
 
 func getScheme(req *http.Request) string {
 	if req.TLS != nil { return "https" }
-	if scheme := req.Header.Get("X-Forwarded-Proto"); scheme != "" { return scheme }
-	if scheme := req.Header.Get("X-Scheme"); scheme != "" { return scheme }
+	// Only accept validated scheme values; these headers are attacker-controllable.
+	for _, header := range []string{"X-Forwarded-Proto", "X-Scheme"} {
+		switch strings.ToLower(strings.TrimSpace(req.Header.Get(header))) {
+		case "https": return "https"
+		case "http": return "http"
+		}
+	}
 	return "http"
 }
 
